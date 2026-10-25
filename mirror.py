@@ -258,7 +258,12 @@ def make_card(post, state, cfg):
                     avatar_url=user.get("avatar"), created_at=created.astimezone(tz),
                     quote=post.get("quote"), theme=cfg.get("card_theme", "dark"))
         with open(path, "rb") as f:
-            return f.read()
+            data = f.read()
+    if DRY_RUN:  # keep a copy so the run's previews can be looked at
+        os.makedirs(os.path.join(HERE, "previews"), exist_ok=True)
+        with open(os.path.join(HERE, "previews", "card-{}.jpg".format(post["id"])), "wb") as f:
+            f.write(data)
+    return data
 
 
 def split_media(post):
@@ -355,6 +360,24 @@ def meta_token_warning(state):
 
 # ---------------------------------------------------------------- main
 
+def preview_latest(state, cfg, count=5):
+    """Dry run: show what would be posted for the latest few posts."""
+    params = dict(POST_FIELDS, exclude="replies,retweets", max_results=count)
+    data = x_get("/users/{}/tweets".format(state["user"]["id"]), params)
+    includes = data.get("includes", {})
+    posts = [normalize(p, includes) for p in data.get("data", [])]
+    print("Dry run: previewing your latest {} posts. Nothing is posted.".format(len(posts)))
+    failures = 0
+    for post in posts:
+        kinds = [m["type"] for m in post["media"]] or ["text"]
+        if post.get("quote"):
+            kinds.append("quote of @" + post["quote"]["handle"])
+        print("\nPost {} ({}): {!r}".format(post["id"], ", ".join(kinds), post["text"][:120]))
+        print("  Instagram caption: {!r}".format(ig_caption(post, state, cfg)[-120:]))
+        failures += publish({"post": post, "done": {}, "attempts": 0}, state, cfg)
+    return failures
+
+
 def publish(entry, state, cfg):
     """Publish to each platform not yet done. Returns the number of failures."""
     failures = 0
@@ -388,6 +411,9 @@ def main():
     if not state.get("user") or now_utc() - datetime.fromisoformat(
             state["user"]["checked"]) > timedelta(days=7):
         refresh_profile(state)
+
+    if DRY_RUN and not os.environ.get("TEST_POST_ID"):
+        sys.exit(1 if preview_latest(state, cfg) else 0)
 
     if os.environ.get("TEST_POST_ID"):
         post = fetch_one_post(os.environ["TEST_POST_ID"])

@@ -53,6 +53,14 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           TEST_POST_ID: ${{ inputs.test_post_id }}
 
+      - name: Keep dry-run card previews
+        if: always() && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: card-previews
+          path: previews/
+          if-no-files-found: ignore
+
       - name: Save progress
         if: always()
         run: |

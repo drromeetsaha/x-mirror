@@ -135,4 +135,22 @@ data = mirror.make_card(post, {"user": {"name": "Test User", "username": "testus
                         {"timezone": "Asia/Kolkata"})
 assert Image.open(io.BytesIO(data)).size == (1080, 1350)
 print("ok  card renders 1080x1350")
+
+# 6. A text post with the Telegram join link goes out as text + logo, no card.
+cfg = mirror.load_json(mirror.CONFIG_PATH, {})
+link_post = {"id": "200", "created_at": None, "media": [], "quote": None,
+             "text": "Join telegram here: https://cosmofeed.com/vig/683f9c20"}
+assert mirror.uses_logo(link_post, cfg)
+assert not mirror.uses_logo(dict(link_post, text="no link here"), cfg)
+assert not mirror.uses_logo(dict(link_post, media=[{"type": "photo", "url": "u"}]), cfg)
+mirror.make_card = lambda *a: (_ for _ in ()).throw(AssertionError("card used"))
+before = len(meta_calls)
+mirror.publish({"post": link_post, "done": {}, "attempts": 0},
+               {"user": {"username": "testuser"}}, cfg)
+calls = meta_calls[before:]
+fb = calls[0]
+assert fb[1] == "PAGE/photos" and fb[2]["message"] == link_post["text"] and fb[3]
+ig_caption = [c for c in calls if c[1] == "IG/media"][0][2]["caption"]
+assert "https://cosmofeed.com/vig/683f9c20" in ig_caption
+print("ok  join-link post: full text + logo on FB and IG, no card")
 print("ALL TESTS PASSED")

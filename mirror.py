@@ -266,6 +266,19 @@ def make_card(post, state, cfg):
     return data
 
 
+def uses_logo(post, cfg):
+    """Text posts carrying a join link (e.g. the Telegram link) go out as the
+    text itself plus the logo, not as a card, so the link stays usable."""
+    if post["media"]:
+        return False
+    return any(m in post["text"] for m in cfg.get("logo_link_match", []))
+
+
+def logo_bytes(cfg, key):
+    with open(os.path.join(HERE, cfg[key]), "rb") as f:
+        return f.read()
+
+
 def split_media(post):
     videos = [m for m in post["media"] if m["type"] == "video"]
     photos = [m for m in post["media"] if m["type"] == "photo"]
@@ -288,6 +301,9 @@ def post_facebook(post, state, cfg):
                           data={"url": p["url"] + "?name=large", "published": "false"})
             data["attached_media[{}]".format(i)] = json.dumps({"media_fbid": photo["id"]})
         graph("POST", "{}/feed".format(page()), data=data)
+    elif uses_logo(post, cfg):
+        graph("POST", "{}/photos".format(page()), data={"message": msg},
+              files={"source": ("logo.jpg", logo_bytes(cfg, "logo_image"), "image/jpeg")})
     elif post.get("quote"):
         # A bare text post would lose the quoted post, so show it on the card.
         graph("POST", "{}/photos".format(page()), data={"message": msg},
@@ -298,7 +314,9 @@ def post_facebook(post, state, cfg):
 
 def ig_caption(post, state, cfg):
     parts = [post["text"]]
-    footer = cfg.get("ig_footer", "").format(handle=state["user"]["username"])
+    if uses_logo(post, cfg) and cfg.get("ig_link_note"):
+        parts.append(cfg["ig_link_note"])  # links in IG captions aren't clickable
+    footer =cfg.get("ig_footer", "").format(handle=state["user"]["username"])
     if footer:
         parts.append(footer)
     if cfg.get("ig_hashtags"):
@@ -332,7 +350,9 @@ def post_instagram(post, state, cfg):
                 "media_type": "CAROUSEL", "children": ",".join(children),
                 "caption": caption})
     else:
-        url = host_image(make_card(post, state, cfg))
+        image = logo_bytes(cfg, "logo_image_square") if uses_logo(post, cfg) \
+            else make_card(post, state, cfg)
+        url = host_image(image)
         container = graph("POST", "{}/media".format(ig()),
                           data={"image_url": url, "caption": caption})
     wait_until_ready(container["id"])

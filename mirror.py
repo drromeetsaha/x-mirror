@@ -351,6 +351,9 @@ def meta_token_warning(state):
     state["token_checked"] = today
     token = os.environ["FB_PAGE_TOKEN"]
     info = graph("GET", "debug_token", params={"input_token": token}).get("data", {})
+    if info.get("type") not in (None, "PAGE"):
+        return ("FB_PAGE_TOKEN is a {} token. It must be the Page token "
+                "(see README).".format(info["type"]))
     expires = info.get("data_access_expires_at") or 0
     if expires and expires - time.time() < 10 * 86400:
         when = datetime.fromtimestamp(expires, timezone.utc).strftime("%d %b %Y")
@@ -420,8 +423,12 @@ def main():
         print("Test post {}: {!r}".format(post["id"], post["text"][:80]))
         entry = {"post": post, "done": {}, "attempts": 0}
         failures = publish(entry, state, cfg)
+        state.pop("token_checked", None)  # always check the token on a test
+        warning = meta_token_warning(state)
+        if warning:
+            print("WARNING: " + warning)
         save_state(state)
-        sys.exit(1 if failures else 0)
+        sys.exit(1 if failures or warning else 0)
 
     if not state.get("started_at"):
         state["started_at"] = now_utc().strftime("%Y-%m-%dT%H:%M:%SZ")

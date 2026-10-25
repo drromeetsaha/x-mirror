@@ -83,11 +83,23 @@ THEMES = {
 }
 
 
+URL_RE = re.compile(r"https?://(?:www\.)?([^\s/]+)(/\S*)?")
+
+
 def _highlight(text):
-    """Escape text and colour #hashtags, @mentions and $cashtags."""
-    escaped = html.escape(text)
-    return re.sub(r"(?<![\w&])([#@$][A-Za-z_][\w.]*)",
-                  r'<span class="tag">\1</span>', escaped)
+    """Escape text, colour #hashtags, @mentions and $cashtags, and shorten
+    links to their site (links aren't clickable on an image anyway)."""
+    links = []
+
+    def stash(m):
+        links.append(m.group(1) + ("/…" if m.group(2) and len(m.group(2)) > 1 else ""))
+        return "\x00{}\x00".format(len(links) - 1)
+
+    escaped = html.escape(URL_RE.sub(stash, text))
+    escaped = re.sub(r"(?<![\w&])([#@$][A-Za-z_][\w.]*)",
+                     r'<span class="tag">\1</span>', escaped)
+    return re.sub("\x00(\\d+)\x00", lambda m: '<span class="tag">{}</span>'.format(
+        html.escape(links[int(m.group(1))])), escaped)
 
 
 def _chrome():

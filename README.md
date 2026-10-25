@@ -3,6 +3,11 @@
 Copies new posts from X (@DrRomeetSaha) to the Facebook Page *The ChartRoom*
 and Instagram *@dr.romeetsaha*. It runs on GitHub Actions every 10 minutes.
 
+**What starts each run:** a cron-job.org job sends a `workflow_dispatch` every
+10 minutes, using a fine-grained token limited to Actions on this repo. That
+token is not one of the secrets below. GitHub's own `schedule` stays in the
+workflow as a backup, but it proved unreliable.
+
 - **Copies:** original posts and quote posts. Replies and reposts are skipped.
 - **Text-only and quote posts:** an image card is made for Instagram. Quote
   posts also get the card on Facebook.

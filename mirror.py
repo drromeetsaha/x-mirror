@@ -361,6 +361,16 @@ def post_instagram(post, state, cfg):
 
 PLATFORMS = [("facebook", post_facebook), ("instagram", post_instagram)]
 
+# Meta refusing the token itself (app blocked, token revoked or expired). Not
+# the post's fault, so such posts wait instead of using up their attempts.
+META_BLOCKED = ("Cannot call API for app", "API access blocked",
+                "Error validating access token", "session has been invalidated",
+                "has not authorized application")
+
+
+def is_meta_blocked(error):
+    return any(s in str(error) for s in META_BLOCKED)
+
 
 def meta_token_warning(state):
     """Once a day, check when Meta's 90-day data access for the Page token
@@ -370,7 +380,10 @@ def meta_token_warning(state):
         return None
     state["token_checked"] = today
     token = os.environ["FB_PAGE_TOKEN"]
-    info = graph("GET", "debug_token", params={"input_token": token}).get("data", {})
+    try:
+        info = graph("GET", "debug_token", params={"input_token": token}).get("data", {})
+    except RuntimeError as e:
+        return "Meta token check failed: {}".format(e)
     if info.get("type") not in (None, "PAGE"):
         return ("FB_PAGE_TOKEN is a {} token. It must be the Page token "
                 "(see README).".format(info["type"]))
@@ -397,12 +410,14 @@ def preview_latest(state, cfg, count=5):
             kinds.append("quote of @" + post["quote"]["handle"])
         print("\nPost {} ({}): {!r}".format(post["id"], ", ".join(kinds), post["text"][:120]))
         print("  Instagram caption: {!r}".format(ig_caption(post, state, cfg)[-120:]))
-        failures += publish({"post": post, "done": {}, "attempts": 0}, state, cfg)
+        entry = {"post": post, "done": {}, "attempts": 0}
+        failures += publish(entry, state, cfg) + bool(entry.get("meta_blocked"))
     return failures
 
 
 def publish(entry, state, cfg):
-    """Publish to each platform not yet done. Returns the number of failures."""
+    """Publish to each platform not yet done. Returns the number of failures;
+    failures caused by Meta blocking the token only set entry["meta_blocked"]."""
     failures = 0
     post = entry["post"]
     for name, fn in PLATFORMS:
@@ -413,10 +428,13 @@ def publish(entry, state, cfg):
             entry["done"][name] = True
             print("  {}: posted".format(name))
         except Exception as e:
-            failures += 1
             entry["last_error"] = "{}: {}".format(name, e)
             print("  {}: FAILED: {}".format(name, e))
-            traceback.print_exc()
+            if is_meta_blocked(e):
+                entry["meta_blocked"] = True
+            else:
+                failures += 1
+                traceback.print_exc()
         save_state(state)  # after every platform, so a crash never double-posts
     return failures
 
@@ -442,7 +460,7 @@ def main():
         post = fetch_one_post(os.environ["TEST_POST_ID"])
         print("Test post {}: {!r}".format(post["id"], post["text"][:80]))
         entry = {"post": post, "done": {}, "attempts": 0}
-        failures = publish(entry, state, cfg)
+        failures = publish(entry, state, cfg) + bool(entry.get("meta_blocked"))
         state.pop("token_checked", None)  # always check the token on a test
         warning = meta_token_warning(state)
         if warning:
@@ -463,12 +481,17 @@ def main():
     save_state(state)
 
     failures = 0
+    meta_blocked = False
     for pid in sorted(state["pending"], key=int):
         entry = state["pending"][pid]
         print("Publishing {}".format(pid))
         failures += publish(entry, state, cfg)
         if all(entry["done"].get(n) for n, _ in PLATFORMS):
             del state["pending"][pid]
+            continue
+        if entry.pop("meta_blocked", False):
+            meta_blocked = True  # keep the post waiting until access is fixed
+            save_state(state)
             continue
         entry["attempts"] += 1
         if entry["attempts"] >= MAX_ATTEMPTS:
@@ -480,6 +503,13 @@ def main():
     if not state["pending"] and failures == 0:
         print("Up to date.")
     warning = meta_token_warning(state)
+    if meta_blocked:
+        print("WARNING: Meta is refusing the Page token; {} post(s) waiting "
+              "(see README).".format(len(state["pending"])))
+        today = now_utc().date().isoformat()
+        if state.get("meta_alert_day") != today:  # one email a day, not every run
+            state["meta_alert_day"] = today
+            failures += 1
     save_state(state)
     if warning:
         print("WARNING: " + warning)

@@ -153,4 +153,22 @@ assert fb[1] == "PAGE/photos" and fb[2]["message"] == link_post["text"] and fb[3
 ig_caption = [c for c in calls if c[1] == "IG/media"][0][2]["caption"]
 assert "https://cosmofeed.com/vig/683f9c20" in ig_caption
 print("ok  join-link post: full text + logo on FB and IG, no card")
+
+# 7. Meta blocking the token: the post waits (no attempts used), one email a day.
+def blocked_graph(method, path, data=None, files=None, params=None):
+    raise RuntimeError("Meta API 400 on x: Cannot call API for app 1 on behalf of user 2")
+mirror.graph = blocked_graph
+state = {"user": {"id": "42", "name": "Test User", "username": "testuser",
+                  "checked": mirror.now_utc().isoformat()},
+         "started_at": "2026-10-25T00:00:00Z", "since_id": "103", "failed": [],
+         "pending": {"300": {"post": dict(link_post, id="300"), "done": {}, "attempts": 0}},
+         "token_checked": "2000-01-01"}
+mirror.save_state(state)
+assert run() == 1, "first blocked run of the day should alert"
+state = mirror.load_json(mirror.STATE_PATH, {})
+assert state["pending"]["300"]["attempts"] == 0
+assert run() == 0, "later blocked runs the same day stay quiet"
+state = mirror.load_json(mirror.STATE_PATH, {})
+assert "300" in state["pending"] and state["pending"]["300"]["attempts"] == 0
+print("ok  Meta block: post kept waiting, attempts unused, one alert a day")
 print("ALL TESTS PASSED")

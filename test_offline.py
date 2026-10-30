@@ -92,7 +92,7 @@ print("ok  first run posts nothing, starts from", state["started_at"])
 # 2. Three new posts arrive; Instagram fails once on the first publish.
 timeline_queue.append(TIMELINE)
 fail_instagram_once["on"] = True
-assert run() == 1
+assert run() == 0, "a first failure is retried quietly, no email"
 state = mirror.load_json(mirror.STATE_PATH, {})
 timeline_params = x_calls[-1][1]
 assert timeline_params["exclude"] == "replies,retweets"
@@ -100,7 +100,7 @@ assert "start_time" in timeline_params and "since_id" not in timeline_params
 assert state["since_id"] == "103"
 assert list(state["pending"]) == ["101"]
 assert state["pending"]["101"]["done"] == {"facebook": True}
-print("ok  failed Instagram post kept for retry, Facebook not repeated")
+print("ok  failed Instagram post kept for retry (no email yet), Facebook not repeated")
 
 fb_feed = [c for c in meta_calls if c[1] == "PAGE/feed"]
 assert fb_feed[0][2]["message"] == "Plain thought. Read https://example.com/article"
@@ -171,4 +171,35 @@ assert run() == 0, "later blocked runs the same day stay quiet"
 state = mirror.load_json(mirror.STATE_PATH, {})
 assert "300" in state["pending"] and state["pending"]["300"]["attempts"] == 0
 print("ok  Meta block: post kept waiting, attempts unused, one alert a day")
+
+# 8. "Media ID is not available" is retried inside the same run.
+mirror.graph = fake_graph
+not_ready = {"left": 2}
+def flaky_graph(method, path, data=None, files=None, params=None):
+    if path == "IG/media_publish" and not_ready["left"]:
+        not_ready["left"] -= 1
+        raise RuntimeError("Meta API 400 on IG/media_publish: Media ID is not available")
+    return fake_graph(method, path, data, files, params)
+mirror.graph = flaky_graph
+mirror.time.sleep = lambda s: None
+mirror.publish_container("c1")
+assert not_ready["left"] == 0
+print("ok  'Media ID is not available' retried in the same run")
+
+# 9. A post failing on two runs in a row emails; the first failure doesn't.
+def ig_down(method, path, data=None, files=None, params=None):
+    if path == "IG/media_publish":
+        raise RuntimeError("simulated Instagram outage")
+    return fake_graph(method, path, data, files, params)
+mirror.graph = ig_down
+state = mirror.load_json(mirror.STATE_PATH, {})
+state["pending"] = {"400": {"post": dict(link_post, id="400"), "done": {}, "attempts": 0}}
+state["meta_alert_day"] = None
+mirror.save_state(state)
+assert run() == 0, "first failure: quiet"
+assert run() == 1, "second failure in a row: email"
+state = mirror.load_json(mirror.STATE_PATH, {})
+assert state["pending"]["400"]["done"] == {"facebook": True}
+assert state["pending"]["400"]["attempts"] == 2
+print("ok  one-off failure is quiet, repeated failure emails")
 print("ALL TESTS PASSED")

@@ -356,7 +356,22 @@ def post_instagram(post, state, cfg):
         container = graph("POST", "{}/media".format(ig()),
                           data={"image_url": url, "caption": caption})
     wait_until_ready(container["id"])
-    graph("POST", "{}/media_publish".format(ig()), data={"creation_id": container["id"]})
+    publish_container(container["id"])
+
+
+def publish_container(container_id, tries=5, pause=15):
+    """media_publish, retried: Instagram sometimes reports FINISHED a little
+    before the media can be published ("Media ID is not available")."""
+    for attempt in range(1, tries + 1):
+        try:
+            return graph("POST", "{}/media_publish".format(ig()),
+                         data={"creation_id": container_id})
+        except RuntimeError as e:
+            if "not available" not in str(e) or attempt == tries:
+                raise
+            print("  instagram: media not ready yet, retrying in {}s".format(pause))
+            time.sleep(pause)
+            wait_until_ready(container_id)
 
 
 PLATFORMS = [("facebook", post_facebook), ("instagram", post_instagram)]
@@ -485,7 +500,10 @@ def main():
     for pid in sorted(state["pending"], key=int):
         entry = state["pending"][pid]
         print("Publishing {}".format(pid))
-        failures += publish(entry, state, cfg)
+        # A post failing for the first time is retried quietly on the next run;
+        # only a second failure in a row counts towards the email.
+        if publish(entry, state, cfg) and entry["attempts"] >= 1:
+            failures += 1
         if all(entry["done"].get(n) for n, _ in PLATFORMS):
             del state["pending"][pid]
             continue

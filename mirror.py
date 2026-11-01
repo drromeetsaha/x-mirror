@@ -850,19 +850,19 @@ def build_recap(state, cfg):
         return None
     best = sorted(charts, key=lambda p: p["score"], reverse=True)[:opts.get("charts", 9)]
     best.sort(key=lambda p: int(p["id"]))
-    titles = [chart_title(p["text"], 90) or "Chart, " + post_date(p, cfg).strftime("%-d %b")
-              for p in best]
+    titles = [chart_title(p["text"], 90) or "Chart" for p in best]
+    days = [post_date(p, cfg).strftime("%-d %b") for p in best]
     end = now_utc().astimezone(ZoneInfo(cfg.get("timezone", "UTC")))
     span = "{} – {}".format((end - timedelta(days=6)).strftime("%-d %b"),
                             end.strftime("%-d %b %Y"))
     cover = os.path.join(WORK, "recap-cover.jpg")
-    render_recap_cover(titles, span, cfg.get("ig_handle", ""),
+    render_recap_cover(list(zip(titles, days)), span, cfg.get("ig_handle", ""),
                        os.path.join(HERE, cfg.get("frame_logo", cfg["logo_image"])),
                        cover, theme=cfg.get("card_theme", "dark"))
     keep_preview(cover)
     images = [cover] + [frame_chart(p, split_media(p)[1][0]["url"], cfg)[0] for p in best]
     head = "📊 This week's top charts ({})\n\n{}".format(span, "\n".join(
-        "{}. {}".format(i, t) for i, t in enumerate(titles, 1)))
+        "{}. {} ({})".format(i, t, d) for i, (t, d) in enumerate(zip(titles, days), 1)))
     caption = "\n\n".join(p for p in (
         head, "Swipe through 👉", cfg.get("ig_footer", "").format(
             handle=state["user"]["username"], ig_handle=cfg.get("ig_handle", "")),

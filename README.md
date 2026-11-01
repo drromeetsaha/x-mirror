@@ -9,24 +9,37 @@ token is not one of the secrets below. GitHub's own `schedule` stays in the
 workflow as a backup, but it proved unreliable.
 
 - **Copies:** original posts and quote posts. Replies and reposts are skipped.
-- **Single-chart posts:** become a 10-second **Reel** on Instagram and
-  Facebook. The chart sits in The ChartRoom frame, with the post's first line
-  as a title, and slowly zooms towards the latest candles (`reel.py`). If a
-  Reel fails before anything is published, the photo is posted instead.
-- **Several photos:** an Instagram carousel, each slide framed. On Facebook
-  they are posted as they are.
-- **Text-only and quote posts:** an image card for Instagram. A long post is
-  split into a carousel of numbered cards. Quote posts also get the card on
-  Facebook.
+- **Reels:** most posts go out as a **Reel** on Instagram and Facebook,
+  because Reels are what both apps show to people who don't follow yet
+  (`reel.py`). A chart sits in The ChartRoom frame, with the post's first
+  line as a title, and slowly zooms towards the latest candles (10 s; with
+  several charts, 5 s each, one after another). A text or quote post shows
+  its card. If a Reel fails before anything is published, the post goes out
+  the old way (photo, carousel or text) instead.
+- **Long text posts:** a carousel of numbered cards on Instagram (easier to
+  read than a long Reel); a Reel of the cards on Facebook (90 s at most).
 - **Videos:** copied as they are (a Reel on Instagram).
-- **Instagram captions:** post text, then the save/follow line, a short
+- **Stories:** every post except videos and join-link posts is also shared
+  to Instagram and Facebook Stories as a 9:16 picture. A Story that fails is
+  skipped, not retried; Instagram Stories pause when fewer than 10 of the
+  day's 50 API posts are left.
+- **Weekly recap:** Sundays from 11:00 India time, one carousel on both: a
+  cover listing the week's best charts (ranked by likes, reposts, quotes,
+  bookmarks and replies on X), then each chart framed. Skipped in a week
+  with fewer than 3 chart posts.
+- **Captions:** post text, then "Send this to a trader friend · Follow …"
+  (sends are what Instagram weighs most for reaching new people), a short
   disclaimer and up to 5 hashtags in all (Instagram's limit), matched from
-  the post's words. Facebook gets the post text and the disclaimer.
-- **Settings** in `config.json`: `ig_footer`, `disclaimer`, `hashtags`
-  (keyword → tag, plus general ones), `chart_reels` (which platforms get
-  Reels; `[]` turns them off), `frame_charts`, `ig_trial_reels` (set to
-  `"SS_PERFORMANCE"` to try Instagram's trial Reels, shown to non-followers
-  first; not yet tested), `card_footer`.
+  the post's words. Facebook gets the text, its own share line and the
+  disclaimer. Instagram images carry short alt text.
+- **Settings** in `config.json`: `ig_footer`, `fb_footer`, `frame_ask`,
+  `disclaimer`, `hashtags` (keyword → tag, plus general ones), `chart_reels`
+  (which platforms get Reels; `[]` turns them off), `text_reels` (Reels for
+  text posts too), `reel_seconds`, `reel_seconds_each`, `stories` (`[]` turns
+  them off), `recap` (`enabled`, `weekday` 0=Mon…6=Sun, `hour`, `charts`,
+  `min_charts`), `frame_charts`, `ig_trial_reels` (set to `"SS_PERFORMANCE"`
+  to try Instagram's trial Reels, shown to non-followers first; not yet
+  tested), `card_footer`.
 - **Progress:** kept in `state.json`, which the workflow commits back, so
   nothing is posted twice.
 
@@ -51,7 +64,8 @@ Go to **Actions → Mirror X posts → Run workflow**. Two options:
 
 A dry run can also be started on another branch (`gh workflow run mirror.yml
 --ref <branch> -f dry_run=true`) to try changes before merging them into
-`main`. Its `card-previews` artifact holds the cards, frames and Reels.
+`main`. Its `card-previews` artifact holds the cards, frames, Stories and
+Reels. Tick **recap** as well to preview this week's recap instead.
 
 ## Renewing the Meta token (about every 90 days)
 

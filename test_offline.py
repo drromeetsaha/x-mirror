@@ -346,8 +346,8 @@ ig_post = [c[2] for c in calls if c[2].get("media_type") == "CAROUSEL"][0]
 assert len(ig_post["children"].split(",")) == 5, "cover + 4 charts"
 assert "1. Chart number 1\n2. Chart number 3\n3. Chart number 4\n4. Chart number 0" \
     not in ig_post["caption"]
-assert "1. Chart number 0\n2. Chart number 1\n3. Chart number 3\n4. Chart number 4" \
-    in ig_post["caption"], "best 4 by likes, in date order"
+assert "1. Chart number 0 (20 Oct)\n2. Chart number 1 (21 Oct)\n3. Chart number 3 (23 Oct)\n" \
+    "4. Chart number 4 (24 Oct)" in ig_post["caption"], "best 4 by likes, in date order"
 fb_post = [c[2] for c in calls if c[1] == "PAGE/feed"][0]
 assert fb_post["message"].startswith("📊 This week's top charts") and "attached_media[4]" in fb_post
 assert state["recap"]["finished"] and state["recap"]["done"] == {"facebook": True, "instagram": True}

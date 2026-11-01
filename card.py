@@ -319,8 +319,10 @@ RECAP_TEMPLATE = """<!doctype html>
         font-weight: 500; padding: 0.42em 0; border-bottom: 2px solid {line}; }}
   li::before {{ content: counter(n); color: {gold}; font-weight: 800;
                 min-width: 1.3em; }}
-  li span {{ display: -webkit-box; -webkit-line-clamp: 2;
-             -webkit-box-orient: vertical; overflow: hidden; }}
+  li .t {{ flex: 1; display: -webkit-box; -webkit-line-clamp: 2;
+           -webkit-box-orient: vertical; overflow: hidden; }}
+  li .d {{ color: {muted}; white-space: nowrap; font-size: 0.8em;
+           padding-top: 0.12em; }}
   .foot {{ display: flex; justify-content: space-between; font-size: 32px;
            color: {muted}; border-top: 2px solid {line}; padding-top: 30px; }}
   .foot b {{ color: {gold}; font-weight: 600; }}
@@ -334,18 +336,22 @@ RECAP_TEMPLATE = """<!doctype html>
   const main = document.querySelector('.main'), t = document.getElementById('t');
   let size = 44;
   t.style.fontSize = size + 'px';
-  while (size > 26 && t.scrollHeight > main.clientHeight) {{
+  const room = main.clientHeight - 68;  // less the padding
+  while (size > 26 && t.scrollHeight > room) {{
     size -= 2; t.style.fontSize = size + 'px';
   }}
 </script>
 </body></html>"""
 
 
-def render_recap_cover(titles, date_range, handle, logo_path, out_path,
+def render_recap_cover(items, date_range, handle, logo_path, out_path,
                        heading="This week's top charts", theme="dark"):
-    """The first slide of the weekly recap: a numbered list of the charts."""
+    """The first slide of the weekly recap: a numbered list of the charts.
+    items: (title, date) pairs."""
     colors = THEMES.get(theme, THEMES["dark"])
-    items = "".join("<li><span>{}</span></li>".format(_highlight(t)) for t in titles)
+    items = "".join(
+        '<li><div class="t"><span>{}</span></div><span class="d">{}</span></li>'.format(
+            _highlight(t), html.escape(d)) for t, d in items)
     page = RECAP_TEMPLATE.format(
         w=WIDTH, h=HEIGHT, logo="file://" + os.path.abspath(logo_path),
         heading=html.escape(heading), range=html.escape(date_range), items=items,

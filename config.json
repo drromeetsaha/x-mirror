@@ -1,11 +1,47 @@
 {
-  "ig_footer": "Follow me on X @{handle}",
-  "ig_hashtags": "",
-  "logo_link_match": ["cosmofeed.com"],
+  "ig_handle": "dr.romeetsaha",
+  "ig_footer": "📌 Save this for later · Follow @{ig_handle} for daily charts",
+  "disclaimer": "Educational view only, not investment advice.",
+  "hashtags": {
+    "max": 5,
+    "keywords": {
+      "bank ?nifty": "#banknifty",
+      "nifty(?:50)?": "#nifty50",
+      "sensex": "#sensex",
+      "crude|oil": "#crudeoil",
+      "gold": "#gold",
+      "silver": "#silver",
+      "bitcoin|btc|crypto": "#bitcoin",
+      "earnings|results|revenue|pat|q[1-4]": "#earnings",
+      "breakout": "#breakout",
+      "sector|sectors|rrg|rotation": "#sectorrotation",
+      "kospi|nasdaq|s&p|dow|nikkei|hang seng|dax": "#globalmarkets",
+      "options|expiry|option chain": "#optionstrading",
+      "smallcaps?|midcaps?": "#smallcapstocks"
+    },
+    "base": [
+      "#stockmarketindia",
+      "#technicalanalysis",
+      "#swingtrading",
+      "#nse"
+    ]
+  },
+  "frame_charts": true,
+  "frame_logo": "assets/chartroom-logo-mark.png",
+  "chart_reels": [
+    "instagram",
+    "facebook"
+  ],
+  "reel_seconds": 10,
+  "ig_trial_reels": "",
+  "card_footer": "The ChartRoom",
+  "card_theme": "dark",
+  "logo_link_match": [
+    "cosmofeed.com"
+  ],
   "logo_image": "assets/chartroom-logo.jpg",
   "logo_image_square": "assets/chartroom-logo-square.jpg",
   "ig_link_note": "👉 Telegram link in bio",
-  "card_theme": "dark",
   "timezone": "Asia/Kolkata",
   "graph_version": "v26.0"
 }

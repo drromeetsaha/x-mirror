@@ -63,15 +63,16 @@ TEMPLATE = """<!doctype html>
     <div><div class="name">{name}</div><div class="handle">@{handle}</div></div>
   </div>
   <div class="main"><div class="text" id="t">{text}{quote}</div></div>
-  <div class="foot"><span>{date}</span><span>Follow @{handle} on X</span></div>
+  <div class="foot"><span>{date}</span><span>{footer}</span></div>
 <script>
   // Shrink the text until it fits the space between header and footer.
   const main = document.querySelector('.main'), t = document.getElementById('t');
-  let size = 68;
+  let size = {start};
   t.style.fontSize = size + 'px';
   while (size > 26 && t.scrollHeight > main.clientHeight - 80) {{
     size -= 2; t.style.fontSize = size + 'px';
   }}
+  document.body.dataset.size = size;  // read back by card_font_size()
 </script>
 </body></html>"""
 
@@ -80,6 +81,64 @@ THEMES = {
                  line="#2a3036", accent="#1d9bf0"),
     "light": dict(bg="#ffffff", fg="#0f1419", muted="#536471",
                   line="#e1e8ed", accent="#1d9bf0"),
+}
+
+GOLD = "#e3b55b"  # The ChartRoom logo colour
+
+# A chart photo inside The ChartRoom frame: logo and date, the post's first
+# line as a title, then the chart. The chart's position is computed here, not
+# by the browser, so a Reel can animate exactly that area.
+FRAME_TEMPLATE = """<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  html, body {{ width: {w}px; height: {h}px; overflow: hidden; }}
+  body {{
+    background: {bg};
+    color: {fg};
+    position: relative;
+    font-family: Inter, -apple-system, "Segoe UI", "Noto Sans", "DejaVu Sans",
+                 sans-serif, "Apple Color Emoji", "Noto Color Emoji";
+  }}
+  .logo {{ position: absolute; left: {pad}px; top: {head_top}px; height: 84px; }}
+  .date {{ position: absolute; right: {pad}px; top: {head_top}px; line-height: 84px;
+           font-size: 30px; color: {muted}; }}
+  .title {{ position: absolute; left: {pad}px; right: {pad}px; top: {title_top}px;
+            height: {title_h}px; display: flex; align-items: flex-end;
+            border-left: 6px solid {gold}; padding-left: 28px; }}
+  #t {{ white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.22;
+        font-weight: 700; }}
+  .tag {{ color: {gold}; }}
+  .chart {{ position: absolute; left: {cx}px; top: {cy}px; width: {cw}px;
+            height: {ch}px; box-shadow: 0 0 0 2px {line}; }}
+  .foot {{ position: absolute; left: {pad}px; right: {pad}px; top: {foot_top}px;
+           display: flex; justify-content: space-between; font-size: 30px;
+           color: {muted}; border-top: 2px solid {line}; padding-top: 28px; }}
+  .foot b {{ color: {gold}; font-weight: 600; }}
+</style></head><body>
+  <img class="logo" src="{logo}">
+  <div class="date">{date}</div>
+  <div class="title"><div id="t">{title}</div></div>
+  <img class="chart" src="{chart}">
+  {foot}
+<script>
+  // Shrink the title until it fits its band.
+  const box = document.querySelector('.title'), t = document.getElementById('t');
+  let size = {font};
+  t.style.fontSize = size + 'px';
+  while (size > 30 && t.scrollHeight > box.clientHeight) {{
+    size -= 2; t.style.fontSize = size + 'px';
+  }}
+</script>
+</body></html>"""
+
+FRAME_LAYOUTS = {
+    # Instagram feed post, 4:5. The profile grid trims ~35px off each side.
+    "feed": dict(w=1080, h=1350, pad=60, head_top=60, title_top=176, title_h=240,
+                 chart=(48, 456, 984, 744), foot_top=1236, font=64),
+    # Reel, 9:16. Instagram's own buttons cover ~250px at the top and ~420px
+    # at the bottom, and the profile grid shows only the middle 3:4.
+    "reel": dict(w=1080, h=1920, pad=60, head_top=280, title_top=396, title_h=320,
+                 chart=(0, 756, 1080, 744), foot_top=None, font=72),
 }
 
 
@@ -109,12 +168,70 @@ def _chrome():
     raise RuntimeError("Chrome not found; set CHROME_PATH")
 
 
-def render_card(text, out_path, name, handle, avatar_url=None, created_at=None,
-                quote=None, theme="dark"):
-    """Write a JPEG card to out_path.
+def _chrome_run(page, width, height, *args):
+    """Load an HTML page in headless Chrome; returns (stdout, temp dir)."""
+    tmp = tempfile.mkdtemp()
+    page_path = os.path.join(tmp, "page.html")
+    with open(page_path, "w", encoding="utf-8") as f:
+        f.write(page)
+    out = subprocess.run(
+        [_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars",
+         "--no-sandbox", "--force-device-scale-factor=1",
+         "--allow-file-access-from-files", "--virtual-time-budget=5000",
+         "--window-size={},{}".format(width, height)] + list(args)
+        + ["file://" + page_path],
+        check=True, capture_output=True, timeout=90, text=True)
+    return out.stdout, tmp
 
-    quote: optional dict with name, handle, text for a quoted post.
+
+def _screenshot(page, out_path, width, height):
+    """Render an HTML page with headless Chrome and save it as a JPEG."""
+    with tempfile.TemporaryDirectory() as tmp:
+        png_path = os.path.join(tmp, "page.png")
+        _, page_dir = _chrome_run(page, width, height, "--screenshot=" + png_path)
+        shutil.rmtree(page_dir, ignore_errors=True)
+        # Instagram's API only accepts JPEG.
+        Image.open(png_path).convert("RGB").save(out_path, "JPEG", quality=92)
+    return out_path
+
+
+def _even(n):
+    return int(n) // 2 * 2
+
+
+def render_chart_frame(chart_path, out_path, title, handle, logo_path, date_text,
+                       layout="feed", theme="dark"):
+    """Write the chart inside The ChartRoom frame as a JPEG.
+
+    Returns the chart's (x, y, width, height) inside the frame.
     """
+    spec = FRAME_LAYOUTS[layout]
+    colors = THEMES.get(theme, THEMES["dark"])
+    ax, ay, aw, ah = spec["chart"]
+    w, h = Image.open(chart_path).size
+    scale = min(aw / w, ah / h)
+    cw, ch = _even(w * scale), _even(h * scale)
+    # Wide charts leave spare height: keep most of it below, so the chart
+    # sits close to its title.
+    cx, cy = _even(ax + (aw - cw) / 2), _even(ay + (ah - ch) * 0.25)
+    foot = ""
+    if spec["foot_top"]:
+        foot = ('<div class="foot"><span>📌 Save for later</span>'
+                '<span>Follow <b>@{}</b></span></div>'.format(html.escape(handle)))
+    page = FRAME_TEMPLATE.format(
+        w=spec["w"], h=spec["h"], pad=spec["pad"], head_top=spec["head_top"],
+        title_top=spec["title_top"], title_h=spec["title_h"], font=spec["font"],
+        foot_top=spec["foot_top"] or 0, cx=cx, cy=cy, cw=cw, ch=ch,
+        logo="file://" + os.path.abspath(logo_path),
+        chart="file://" + os.path.abspath(chart_path),
+        title=_highlight(title), date=html.escape(date_text), foot=foot,
+        gold=GOLD, **colors)
+    _screenshot(page, out_path, spec["w"], spec["h"])
+    return cx, cy, cw, ch
+
+
+def _card_page(text, name, handle, avatar_url=None, created_at=None,
+               quote=None, theme="dark", footer=None, size=None):
     colors = THEMES.get(theme, THEMES["dark"])
     quote_html = ""
     if quote:
@@ -133,20 +250,30 @@ def render_card(text, out_path, name, handle, avatar_url=None, created_at=None,
         w=WIDTH, h=HEIGHT, name=html.escape(name), handle=html.escape(handle),
         avatar_style=avatar_style, avatar_letter=avatar_letter,
         text=_highlight(text), quote=quote_html,
-        date=when.strftime("%-d %b %Y"), **colors)
+        date=when.strftime("%-d %b %Y"),
+        footer=html.escape(footer or "Follow @{} on X".format(handle)),
+        start=size or 68, **colors)
+    return page
 
-    with tempfile.TemporaryDirectory() as tmp:
-        page_path = os.path.join(tmp, "card.html")
-        png_path = os.path.join(tmp, "card.png")
-        with open(page_path, "w", encoding="utf-8") as f:
-            f.write(page)
-        subprocess.run(
-            [_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars",
-             "--no-sandbox", "--force-device-scale-factor=1",
-             "--virtual-time-budget=5000",
-             "--window-size={},{}".format(WIDTH, HEIGHT),
-             "--screenshot=" + png_path, "file://" + page_path],
-            check=True, capture_output=True, timeout=90)
-        # Instagram's API only accepts JPEG.
-        Image.open(png_path).convert("RGB").save(out_path, "JPEG", quality=92)
-    return out_path
+
+def card_font_size(text, name, handle, **kw):
+    """The font size a card's text ends up at once shrunk to fit. The pages
+    of a carousel all use the smallest, so they match."""
+    dom, page_dir = _chrome_run(_card_page(text, name, handle, **kw),
+                                WIDTH, HEIGHT, "--dump-dom")
+    shutil.rmtree(page_dir, ignore_errors=True)
+    found = re.search(r'data-size="(\d+)"', dom)
+    return int(found.group(1)) if found else 26
+
+
+def render_card(text, out_path, name, handle, avatar_url=None, created_at=None,
+                quote=None, theme="dark", footer=None, size=None):
+    """Write a JPEG card to out_path.
+
+    quote: optional dict with name, handle, text for a quoted post.
+    footer: bottom-right text; defaults to "Follow @handle on X".
+    size: largest font size to try (px); the text shrinks from there to fit.
+    """
+    page = _card_page(text, name, handle, avatar_url, created_at, quote, theme,
+                      footer, size)
+    return _screenshot(page, out_path, WIDTH, HEIGHT)

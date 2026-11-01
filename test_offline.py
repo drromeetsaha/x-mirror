@@ -1,6 +1,7 @@
 """Offline check of mirror.py: fake X responses, record Meta calls.
 
-Run: python test_offline.py   (needs Chrome for the card render)
+Run: python test_offline.py   (needs Chrome and imageio-ffmpeg for the
+card, frame and Reel renders)
 """
 
 import os
@@ -65,13 +66,27 @@ def fake_graph(method, path, data=None, files=None, params=None):
     if fail_instagram_once["on"] and path == "IG/media_publish":
         fail_instagram_once["on"] = False
         raise RuntimeError("simulated Instagram outage")
-    return {"id": "m{}".format(len(meta_calls)), "status_code": "FINISHED",
+    return {"id": "m{}".format(len(meta_calls)), "video_id": "v{}".format(len(meta_calls)),
+            "status_code": "FINISHED",
             "images": [{"width": 720, "source": "https://cdn.example/s.jpg"},
                        {"width": 1440, "source": "https://cdn.example/l.jpg"}]}
 
 
+uploads = []
+reel_upload_fails = {"on": False}
+
+
+def fake_rupload(kind, media_id, video_path):
+    if reel_upload_fails["on"]:
+        raise RuntimeError("Meta upload 500 on {}: simulated".format(kind))
+    assert os.path.getsize(video_path) > 10000, "Reel video should exist"
+    uploads.append((kind, media_id))
+
+
 mirror.x_get = fake_x_get
 mirror.graph = fake_graph
+mirror.rupload = fake_rupload
+DISCLAIMER = mirror.load_json(mirror.CONFIG_PATH, {})["disclaimer"]
 mirror.download_image = lambda url: Image.new("RGB", (900, 1600), "white")  # tall screenshot
 
 
@@ -103,15 +118,27 @@ assert state["pending"]["101"]["done"] == {"facebook": True}
 print("ok  failed Instagram post kept for retry (no email yet), Facebook not repeated")
 
 fb_feed = [c for c in meta_calls if c[1] == "PAGE/feed"]
-assert fb_feed[0][2]["message"] == "Plain thought. Read https://example.com/article"
+assert fb_feed[0][2]["message"] == "Plain thought. Read https://example.com/article\n\n" + DISCLAIMER
 fb_photos = [c for c in meta_calls if c[1] == "PAGE/photos" and c[2].get("message")]
-assert fb_photos[0][2]["message"] == "Agree with this & more" and fb_photos[0][3]
-assert fb_photos[1][2]["url"] == "https://pbs.twimg.com/media/abc.jpg?name=large"
-assert fb_photos[1][2]["message"] == "Look at this chart"
+assert fb_photos[0][2]["message"].startswith("Agree with this & more\n\n") and fb_photos[0][3]
 ig_media = [c for c in meta_calls if c[1] == "IG/media"]
-assert all(c[2]["image_url"] == "https://cdn.example/l.jpg" for c in ig_media)
-assert ig_media[0][2]["caption"].endswith("Follow me on X @testuser")
-print("ok  links expanded, media links dropped, quote shown as card, IG captions")
+ig_images = [c for c in ig_media if "image_url" in c[2]]
+assert all(c[2]["image_url"] == "https://cdn.example/l.jpg" for c in ig_images)
+caption = ig_images[0][2]["caption"]
+assert "Follow @dr.romeetsaha" in caption and DISCLAIMER in caption
+assert "Follow me on X" not in caption
+assert caption.endswith("#stockmarketindia #technicalanalysis #swingtrading #nse"), caption
+print("ok  links expanded, media links dropped, quote card, IG caption footer + hashtags")
+
+# The chart photo (103) went out as a Reel on both, not as a photo.
+fb_reels = [c for c in meta_calls if c[1] == "PAGE/video_reels"]
+assert [c[2]["upload_phase"] for c in fb_reels] == ["start", "finish"]
+assert fb_reels[1][2]["description"].startswith("Look at this chart")
+assert not any(c[2].get("url", "").startswith("https://pbs.twimg.com") for c in meta_calls)
+ig_reel = [c for c in ig_media if c[2].get("media_type") == "REELS"][0][2]
+assert ig_reel["upload_type"] == "resumable" and ig_reel["share_to_feed"] == "true"
+assert [u[0] for u in uploads] == ["video-upload", "ig-api-upload"]
+print("ok  chart photo became a Reel on Facebook and Instagram (one video, two uploads)")
 
 # 3. Next run: no new posts, retries only Instagram for 101.
 before = len(meta_calls)
@@ -202,4 +229,36 @@ state = mirror.load_json(mirror.STATE_PATH, {})
 assert state["pending"]["400"]["done"] == {"facebook": True}
 assert state["pending"]["400"]["attempts"] == 2
 print("ok  one-off failure is quiet, repeated failure emails")
+
+# 10. A Reel that fails to upload falls back to the photo, framed on Instagram.
+mirror.graph = fake_graph
+reel_upload_fails["on"] = True
+chart_post = mirror.normalize(TIMELINE["data"][0], TIMELINE["includes"])
+chart_post["id"] = "500"
+before = len(meta_calls)
+entry = {"post": chart_post, "done": {}, "attempts": 0}
+assert mirror.publish(entry, state, cfg) == 0
+calls = meta_calls[before:]
+assert entry["done"] == {"facebook": True, "instagram": True}
+assert any(c[1] == "PAGE/photos" and c[2].get("message", "").startswith("Look at this chart")
+           for c in calls)
+assert not any(c[2].get("upload_phase") == "finish" for c in calls)
+assert any(c[1] == "IG/media" and "image_url" in c[2] for c in calls)
+assert any(c[1] == "IG/media_publish" for c in calls)
+reel_upload_fails["on"] = False
+print("ok  failed Reel upload falls back to the photo on both platforms")
+
+# 11. Hashtags stay within 5 in all, counting the post's own.
+cfg = mirror.load_json(mirror.CONFIG_PATH, {})
+tags = mirror.hashtags_for("#Nifty looks weak, bank nifty too", cfg)
+assert tags[:2] == ["#banknifty", "#nifty50"] and len(tags) == 4, tags
+assert mirror.hashtags_for("#a #b #c #d #e", cfg) == []
+assert "#nifty50" not in mirror.hashtags_for("#banknifty breakout", cfg)
+print("ok  hashtags matched from the text, 5 at most")
+
+# 12. Frame title: first line, no links, shortened at a word.
+assert mirror.chart_title("#Nifty breakout https://t.co/x\nmore detail") == "#Nifty breakout"
+long = mirror.chart_title("word " * 40)
+assert long.endswith("…") and len(long) <= 111
+print("ok  chart frame title")
 print("ALL TESTS PASSED")

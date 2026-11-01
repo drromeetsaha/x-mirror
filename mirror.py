@@ -12,10 +12,12 @@ Environment:
   TEST_POST_ID=id  mirror this one post now, ignoring state
 """
 
+import hashlib
 import html
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -27,7 +29,8 @@ import requests
 from PIL import Image
 from requests_oauthlib import OAuth1
 
-from card import THEMES, render_card
+from card import THEMES, URL_RE, render_card, render_chart_frame
+from reel import render_reel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(HERE, "state.json")
@@ -37,6 +40,7 @@ X_API = "https://api.x.com/2"
 MAX_ATTEMPTS = 5
 IG_CAPTION_LIMIT = 2200
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
+WORK = tempfile.mkdtemp(prefix="x-mirror-")  # charts, frames and Reels for this run
 
 POST_FIELDS = {
     "tweet.fields": "created_at,entities,note_tweet,referenced_tweets,attachments,author_id",
@@ -171,7 +175,7 @@ def graph(method, path, data=None, files=None, params=None):
     if DRY_RUN:
         print("    [dry run] {} {} {}".format(method, path, {
             k: (str(v)[:80]) for k, v in (data or {}).items()}))
-        return {"id": "dry-run", "status_code": "FINISHED",
+        return {"id": "dry-run", "video_id": "dry-run", "status_code": "FINISHED",
                 "images": [{"width": 1, "source": "https://example.com/dry.jpg"}]}
     cfg = load_json(CONFIG_PATH, {})
     url = "https://graph.facebook.com/{}/{}".format(cfg.get("graph_version", "v26.0"), path)
@@ -188,6 +192,31 @@ def graph(method, path, data=None, files=None, params=None):
         msg = body.get("error", {}).get("message") or resp.text[:300]
         raise RuntimeError("Meta API {} on {}: {}".format(resp.status_code, path, msg))
     return body
+
+
+def rupload(kind, media_id, video_path):
+    """Send a local video to Meta's upload host. kind is "ig-api-upload"
+    (Instagram Reel container) or "video-upload" (Facebook Reel)."""
+    if DRY_RUN:
+        print("    [dry run] upload {} to {} {}".format(
+            os.path.basename(video_path), kind, media_id))
+        return
+    cfg = load_json(CONFIG_PATH, {})
+    with open(video_path, "rb") as f:
+        body = f.read()
+    resp = requests.post(
+        "https://rupload.facebook.com/{}/{}/{}".format(
+            kind, cfg.get("graph_version", "v26.0"), media_id),
+        data=body, timeout=300, headers={
+            "Authorization": "OAuth " + os.environ["FB_PAGE_TOKEN"],
+            "offset": "0", "file_size": str(len(body))})
+    try:
+        ok = resp.json().get("success")
+    except ValueError:
+        ok = False
+    if resp.status_code >= 400 or not ok:
+        raise RuntimeError("Meta upload {} on {}: {}".format(
+            resp.status_code, kind, resp.text[:300]))
 
 
 def page():
@@ -247,23 +276,124 @@ def wait_until_ready(container_id, timeout=600):
     raise RuntimeError("Instagram media still processing after {}s".format(timeout))
 
 
-def make_card(post, state, cfg):
-    user = state["user"]
+def keep_preview(path):
+    """Dry run: keep a copy so the run's previews can be looked at."""
+    if DRY_RUN:
+        os.makedirs(os.path.join(HERE, "previews"), exist_ok=True)
+        with open(path, "rb") as src, \
+                open(os.path.join(HERE, "previews", os.path.basename(path)), "wb") as dst:
+            dst.write(src.read())
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def post_date(post, cfg):
     tz = ZoneInfo(cfg.get("timezone", "UTC"))
     created = datetime.fromisoformat(post["created_at"].replace("Z", "+00:00")) \
         if post.get("created_at") else now_utc()
-    with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "card.jpg")
-        render_card(post["text"], path, user["name"], user["username"],
-                    avatar_url=user.get("avatar"), created_at=created.astimezone(tz),
-                    quote=post.get("quote"), theme=cfg.get("card_theme", "dark"))
-        with open(path, "rb") as f:
-            data = f.read()
-    if DRY_RUN:  # keep a copy so the run's previews can be looked at
-        os.makedirs(os.path.join(HERE, "previews"), exist_ok=True)
-        with open(os.path.join(HERE, "previews", "card-{}.jpg".format(post["id"])), "wb") as f:
-            f.write(data)
-    return data
+    return created.astimezone(tz)
+
+
+def make_card(post, state, cfg):
+    user = state["user"]
+    path = os.path.join(WORK, "card-{}.jpg".format(post["id"]))
+    render_card(post["text"], path, user["name"], user["username"],
+                avatar_url=user.get("avatar"), created_at=post_date(post, cfg),
+                quote=post.get("quote"), theme=cfg.get("card_theme", "dark"),
+                footer=cfg.get("card_footer"))
+    keep_preview(path)
+    return read_bytes(path)
+
+
+def chart_title(text, limit=110):
+    """The post's first line, without links, to head a chart frame."""
+    lines = [l.strip() for l in URL_RE.sub("", text).splitlines() if l.strip()]
+    title = lines[0] if lines else ""
+    if len(title) > limit:
+        title = title[:limit].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
+    return title
+
+
+def url_key(url):
+    return hashlib.md5(url.encode()).hexdigest()[:10]
+
+
+def chart_file(url):
+    """Download a chart photo once per run; returns its local path."""
+    path = os.path.join(WORK, "chart-{}.png".format(url_key(url)))
+    if not os.path.exists(path):
+        download_image(url).convert("RGB").save(path)
+    return path
+
+
+def frame_chart(post, url, cfg, layout="feed"):
+    """The chart inside The ChartRoom frame. Returns the JPEG's path and
+    where the chart sits in it (a Reel animates that area)."""
+    chart = chart_file(url)
+    out = os.path.join(WORK, "{}-{}-{}.jpg".format(layout, post["id"], url_key(url)))
+    rect = render_chart_frame(
+        chart, out, chart_title(post["text"]), cfg.get("ig_handle", ""),
+        os.path.join(HERE, cfg.get("frame_logo", cfg["logo_image"])),
+        post_date(post, cfg).strftime("%-d %b %Y"), layout=layout,
+        theme=cfg.get("card_theme", "dark"))
+    keep_preview(out)
+    return out, rect
+
+
+def make_reel(post, url, cfg):
+    """A short Reel of a chart photo, built once per run and shared by
+    Facebook and Instagram."""
+    path = os.path.join(WORK, "reel-{}.mp4".format(post["id"]))
+    if not os.path.exists(path):
+        frame, rect = frame_chart(post, url, cfg, layout="reel")
+        render_reel(frame, chart_file(url), rect, path,
+                    seconds=cfg.get("reel_seconds", 10))
+        keep_preview(path)
+    return path
+
+
+def wants_reel(post, cfg, platform):
+    """Single-chart posts go out as Reels, which reach people who don't
+    follow the account yet."""
+    videos, photos = split_media(post)
+    return not videos and len(photos) == 1 and platform in cfg.get("chart_reels", [])
+
+
+def try_reel(platform, upload):
+    """Build and upload a Reel. Returns None if that fails: nothing has been
+    published yet, so the caller posts the chart as a photo instead."""
+    try:
+        return upload()
+    except Exception as e:
+        if is_meta_blocked(e):
+            raise
+        print("  {}: Reel failed ({}); posting the photo instead".format(platform, e))
+        traceback.print_exc()
+        return None
+
+
+HASHTAG_RE = re.compile(r"(?<![\w&])#(\w+)")
+
+
+def hashtags_for(text, cfg):
+    """Hashtags to add, keeping the post's total within Instagram's limit
+    (5): first ones matched from the post's words, then the general ones."""
+    opts = cfg.get("hashtags") or {}
+    have = {t.lower() for t in HASHTAG_RE.findall(text)}
+    room = opts.get("max", 5) - len(have)
+    matched = [tag for pattern, tag in opts.get("keywords", {}).items()
+               if re.search(r"\b(?:{})\b".format(pattern), text, re.I)]
+    tags = []
+    for tag in matched + opts.get("base", []):
+        if len(tags) >= room:
+            break
+        if tag.lstrip("#").lower() not in have:
+            have.add(tag.lstrip("#").lower())
+            tags.append(tag)
+    return tags
 
 
 def uses_logo(post, cfg):
@@ -285,10 +415,30 @@ def split_media(post):
     return videos, photos
 
 
+def fb_message(post, cfg):
+    if uses_logo(post, cfg) or not cfg.get("disclaimer"):
+        return post["text"]
+    return "{}\n\n{}".format(post["text"], cfg["disclaimer"])
+
+
+def fb_reel_upload(post, url, cfg):
+    video = make_reel(post, url, cfg)
+    start = graph("POST", "{}/video_reels".format(page()), data={"upload_phase": "start"})
+    rupload("video-upload", start["video_id"], video)
+    return start["video_id"]
+
+
 def post_facebook(post, state, cfg):
-    msg = post["text"]
+    msg = fb_message(post, cfg)
     videos, photos = split_media(post)
-    if videos:
+    reel = None
+    if wants_reel(post, cfg, "facebook"):
+        reel = try_reel("facebook", lambda: fb_reel_upload(post, photos[0]["url"], cfg))
+    if reel:
+        graph("POST", "{}/video_reels".format(page()), data={
+            "upload_phase": "finish", "video_id": reel,
+            "video_state": "PUBLISHED", "description": msg})
+    elif videos:
         graph("POST", "{}/videos".format(page()),
               data={"file_url": videos[0]["url"], "description": msg})
     elif len(photos) == 1:
@@ -313,20 +463,57 @@ def post_facebook(post, state, cfg):
 
 
 def ig_caption(post, state, cfg):
-    parts = [post["text"]]
-    if uses_logo(post, cfg) and cfg.get("ig_link_note"):
-        parts.append(cfg["ig_link_note"])  # links in IG captions aren't clickable
-    footer =cfg.get("ig_footer", "").format(handle=state["user"]["username"])
-    if footer:
-        parts.append(footer)
-    if cfg.get("ig_hashtags"):
-        parts.append(cfg["ig_hashtags"])
-    caption = "\n\n".join(p for p in parts if p)
-    return caption[:IG_CAPTION_LIMIT]
+    logo = uses_logo(post, cfg)
+    tail = []
+    if logo and cfg.get("ig_link_note"):
+        tail.append(cfg["ig_link_note"])  # links in IG captions aren't clickable
+    tail.append(cfg.get("ig_footer", "").format(
+        handle=state["user"]["username"], ig_handle=cfg.get("ig_handle", "")))
+    if not logo:
+        tail.append(cfg.get("disclaimer", ""))
+    tail.append(" ".join(hashtags_for(post["text"], cfg)))
+    tail = "\n\n".join(p for p in tail if p)
+    # Over the limit, shorten the post text, never the footer or hashtags.
+    text, room = post["text"], IG_CAPTION_LIMIT - len(tail) - 2
+    if len(text) > room:
+        text = text[:room - 1].rstrip() + "…"
+    return "\n\n".join(p for p in (text, tail) if p)
+
+
+def ig_image(post, url, cfg, pad):
+    """A chart photo ready for Instagram: framed, or padded to fit 4:5."""
+    if cfg.get("frame_charts"):
+        return read_bytes(frame_chart(post, url, cfg)[0])
+    return fit_for_instagram(download_image(url), pad)
+
+
+def ig_reel_container(post, url, caption, cfg):
+    video = make_reel(post, url, cfg)
+    data = {"media_type": "REELS", "upload_type": "resumable",
+            "caption": caption, "share_to_feed": "true"}
+    if cfg.get("ig_trial_reels"):  # shown to non-followers first
+        data["trial_params"] = json.dumps(
+            {"graduation_strategy": cfg["ig_trial_reels"]})
+    container = graph("POST", "{}/media".format(ig()), data=data)
+    rupload("ig-api-upload", container["id"], video)
+    wait_until_ready(container["id"])
+    return container
 
 
 def post_instagram(post, state, cfg):
     caption = ig_caption(post, state, cfg)
+    container = None
+    if wants_reel(post, cfg, "instagram"):
+        url = split_media(post)[1][0]["url"]
+        container = try_reel("instagram", lambda: ig_reel_container(post, url, caption, cfg))
+    if not container:
+        container = ig_container(post, state, cfg, caption)
+    wait_until_ready(container["id"])
+    publish_container(container["id"])
+
+
+def ig_container(post, state, cfg, caption):
+    """The Instagram media container for a post (not yet published)."""
     pad = THEMES.get(cfg.get("card_theme", "dark"), THEMES["dark"])["bg"]
     videos, photos = split_media(post)
     if videos:
@@ -334,8 +521,7 @@ def post_instagram(post, state, cfg):
             "media_type": "REELS", "video_url": videos[0]["url"],
             "caption": caption, "share_to_feed": "true"})
     elif photos:
-        urls = [host_image(fit_for_instagram(download_image(p["url"]), pad))
-                for p in photos[:10]]
+        urls = [host_image(ig_image(post, p["url"], cfg, pad)) for p in photos[:10]]
         if len(urls) == 1:
             container = graph("POST", "{}/media".format(ig()),
                               data={"image_url": urls[0], "caption": caption})
@@ -355,8 +541,7 @@ def post_instagram(post, state, cfg):
         url = host_image(image)
         container = graph("POST", "{}/media".format(ig()),
                           data={"image_url": url, "caption": caption})
-    wait_until_ready(container["id"])
-    publish_container(container["id"])
+    return container
 
 
 def publish_container(container_id, tries=5, pause=15):
@@ -424,7 +609,7 @@ def preview_latest(state, cfg, count=5):
         if post.get("quote"):
             kinds.append("quote of @" + post["quote"]["handle"])
         print("\nPost {} ({}): {!r}".format(post["id"], ", ".join(kinds), post["text"][:120]))
-        print("  Instagram caption: {!r}".format(ig_caption(post, state, cfg)[-120:]))
+        print("  Instagram caption ends: {!r}".format(ig_caption(post, state, cfg)[-220:]))
         entry = {"post": post, "done": {}, "attempts": 0}
         failures += publish(entry, state, cfg) + bool(entry.get("meta_blocked"))
     return failures

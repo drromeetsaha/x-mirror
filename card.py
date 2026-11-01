@@ -67,11 +67,12 @@ TEMPLATE = """<!doctype html>
 <script>
   // Shrink the text until it fits the space between header and footer.
   const main = document.querySelector('.main'), t = document.getElementById('t');
-  let size = 68;
+  let size = {start};
   t.style.fontSize = size + 'px';
   while (size > 26 && t.scrollHeight > main.clientHeight - 80) {{
     size -= 2; t.style.fontSize = size + 'px';
   }}
+  document.body.dataset.size = size;  // read back by card_font_size()
 </script>
 </body></html>"""
 
@@ -167,20 +168,28 @@ def _chrome():
     raise RuntimeError("Chrome not found; set CHROME_PATH")
 
 
+def _chrome_run(page, width, height, *args):
+    """Load an HTML page in headless Chrome; returns (stdout, temp dir)."""
+    tmp = tempfile.mkdtemp()
+    page_path = os.path.join(tmp, "page.html")
+    with open(page_path, "w", encoding="utf-8") as f:
+        f.write(page)
+    out = subprocess.run(
+        [_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars",
+         "--no-sandbox", "--force-device-scale-factor=1",
+         "--allow-file-access-from-files", "--virtual-time-budget=5000",
+         "--window-size={},{}".format(width, height)] + list(args)
+        + ["file://" + page_path],
+        check=True, capture_output=True, timeout=90, text=True)
+    return out.stdout, tmp
+
+
 def _screenshot(page, out_path, width, height):
     """Render an HTML page with headless Chrome and save it as a JPEG."""
     with tempfile.TemporaryDirectory() as tmp:
-        page_path = os.path.join(tmp, "page.html")
         png_path = os.path.join(tmp, "page.png")
-        with open(page_path, "w", encoding="utf-8") as f:
-            f.write(page)
-        subprocess.run(
-            [_chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars",
-             "--no-sandbox", "--force-device-scale-factor=1",
-             "--allow-file-access-from-files", "--virtual-time-budget=5000",
-             "--window-size={},{}".format(width, height),
-             "--screenshot=" + png_path, "file://" + page_path],
-            check=True, capture_output=True, timeout=90)
+        _, page_dir = _chrome_run(page, width, height, "--screenshot=" + png_path)
+        shutil.rmtree(page_dir, ignore_errors=True)
         # Instagram's API only accepts JPEG.
         Image.open(png_path).convert("RGB").save(out_path, "JPEG", quality=92)
     return out_path
@@ -221,13 +230,8 @@ def render_chart_frame(chart_path, out_path, title, handle, logo_path, date_text
     return cx, cy, cw, ch
 
 
-def render_card(text, out_path, name, handle, avatar_url=None, created_at=None,
-                quote=None, theme="dark", footer=None):
-    """Write a JPEG card to out_path.
-
-    quote: optional dict with name, handle, text for a quoted post.
-    footer: bottom-right text; defaults to "Follow @handle on X".
-    """
+def _card_page(text, name, handle, avatar_url=None, created_at=None,
+               quote=None, theme="dark", footer=None, size=None):
     colors = THEMES.get(theme, THEMES["dark"])
     quote_html = ""
     if quote:
@@ -247,5 +251,29 @@ def render_card(text, out_path, name, handle, avatar_url=None, created_at=None,
         avatar_style=avatar_style, avatar_letter=avatar_letter,
         text=_highlight(text), quote=quote_html,
         date=when.strftime("%-d %b %Y"),
-        footer=html.escape(footer or "Follow @{} on X".format(handle)), **colors)
+        footer=html.escape(footer or "Follow @{} on X".format(handle)),
+        start=size or 68, **colors)
+    return page
+
+
+def card_font_size(text, name, handle, **kw):
+    """The font size a card's text ends up at once shrunk to fit. The pages
+    of a carousel all use the smallest, so they match."""
+    dom, page_dir = _chrome_run(_card_page(text, name, handle, **kw),
+                                WIDTH, HEIGHT, "--dump-dom")
+    shutil.rmtree(page_dir, ignore_errors=True)
+    found = re.search(r'data-size="(\d+)"', dom)
+    return int(found.group(1)) if found else 26
+
+
+def render_card(text, out_path, name, handle, avatar_url=None, created_at=None,
+                quote=None, theme="dark", footer=None, size=None):
+    """Write a JPEG card to out_path.
+
+    quote: optional dict with name, handle, text for a quoted post.
+    footer: bottom-right text; defaults to "Follow @handle on X".
+    size: largest font size to try (px); the text shrinks from there to fit.
+    """
+    page = _card_page(text, name, handle, avatar_url, created_at, quote, theme,
+                      footer, size)
     return _screenshot(page, out_path, WIDTH, HEIGHT)

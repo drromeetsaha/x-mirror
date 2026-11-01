@@ -270,13 +270,17 @@ pages = mirror.split_for_cards(long_text)
 assert len(pages) > 1 and all(len(p) <= mirror.CARD_CHARS for p in pages)
 assert "\n\n".join(pages) == long_text, "nothing lost or reordered"
 assert pages[0].startswith("Q2 FY27")
+assert min(map(len, pages)) > 0.5 * max(map(len, pages)), "pages evened out"
+assert all(p.split("\n\n")[0].startswith(("Q2", "Company")) for p in pages), "paragraphs kept whole"
 assert all(len(p) <= mirror.CARD_CHARS for p in mirror.split_for_cards("x" * 2000 + " end"))
 long_post = {"id": "600", "created_at": None, "media": [], "quote": None, "text": long_text}
 rendered = []
-mirror.make_card = lambda post, state, cfg, text=None, page=None: rendered.append(page) or b"jpg"
+mirror.make_card = lambda post, state, cfg, text=None, page=None, size=None: \
+    rendered.append(page) or b"jpg"
+mirror.card_font_size = lambda text, name, handle: 40
 before = len(meta_calls)
 mirror.publish({"post": long_post, "done": {"facebook": True}, "attempts": 0},
-               {"user": {"username": "testuser"}}, cfg)
+               {"user": {"username": "testuser", "name": "Test User"}}, cfg)
 calls = meta_calls[before:]
 carousel = [c for c in calls if c[2].get("media_type") == "CAROUSEL"]
 assert len(carousel) == 1 and len(carousel[0][2]["children"].split(",")) == len(pages)

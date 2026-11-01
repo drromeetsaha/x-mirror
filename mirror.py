@@ -29,7 +29,7 @@ import requests
 from PIL import Image
 from requests_oauthlib import OAuth1
 
-from card import THEMES, URL_RE, render_card, render_chart_frame
+from card import THEMES, URL_RE, card_font_size, render_card, render_chart_frame
 from reel import render_reel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,7 +39,7 @@ CONFIG_PATH = os.path.join(HERE, "config.json")
 X_API = "https://api.x.com/2"
 MAX_ATTEMPTS = 5
 IG_CAPTION_LIMIT = 2200
-CARD_CHARS = 550  # about what a card holds at a readable size
+CARD_CHARS = 420  # about what a card holds at a readable size
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 WORK = tempfile.mkdtemp(prefix="x-mirror-")  # charts, frames and Reels for this run
 
@@ -298,9 +298,9 @@ def post_date(post, cfg):
     return created.astimezone(tz)
 
 
-def make_card(post, state, cfg, text=None, page=None):
-    """The post as an image card. text and page ("2/3") make one card of
-    a long post split over several."""
+def make_card(post, state, cfg, text=None, page=None, size=None):
+    """The post as an image card. text, page ("2/3") and size (font px)
+    make one card of a long post split over several."""
     user = state["user"]
     footer = cfg.get("card_footer") or "Follow @{} on X".format(user["username"])
     if page:
@@ -310,7 +310,7 @@ def make_card(post, state, cfg, text=None, page=None):
     render_card(post["text"] if text is None else text, path, user["name"],
                 user["username"], avatar_url=user.get("avatar"),
                 created_at=post_date(post, cfg), quote=post.get("quote"),
-                theme=cfg.get("card_theme", "dark"), footer=footer)
+                theme=cfg.get("card_theme", "dark"), footer=footer, size=size)
     keep_preview(path)
     return read_bytes(path)
 
@@ -326,12 +326,31 @@ def _wrap(line, limit):
 
 def split_for_cards(text, limit=CARD_CHARS, most=10):
     """Split a long post into card-sized pages, keeping paragraphs whole
-    where they fit. Instagram carousels hold 10 at most."""
+    where they fit, and evening out the pages so none is nearly empty.
+    Instagram carousels hold 10 at most."""
+    pages = _pack(text, limit)
+    target = len(text) / len(pages)
+    # Pack again with the smallest page size that needs no extra pages.
+    for size in range(int(target), limit):
+        even = _pack(text, limit, page=size)
+        if len(even) <= len(pages):
+            pages = even
+            break
+    if len(pages) > most:
+        pages = pages[:most]
+        pages[-1] = pages[-1].rstrip() + " …"
+    return pages
+
+
+def _pack(text, limit, page=None):
+    """Fill pages up to `page` characters; only paragraphs longer than
+    `limit` (a full card) are broken up."""
+    page = page or limit
     pages, cur = [], ""
 
     def add(chunk, sep):
         nonlocal cur
-        if cur and len(cur) + len(sep) + len(chunk) > limit:
+        if cur and len(cur) + len(sep) + len(chunk) > page:
             pages.append(cur)
             cur = chunk
         else:
@@ -348,9 +367,6 @@ def split_for_cards(text, limit=CARD_CHARS, most=10):
                 sep = "\n"
     if cur:
         pages.append(cur)
-    if len(pages) > most:
-        pages = pages[:most]
-        pages[-1] = pages[-1].rstrip() + " …"
     return pages
 
 
@@ -576,8 +592,10 @@ def ig_container(post, state, cfg, caption):
         # A long post shrinks to an unreadable size (or gets cut off) on one
         # card, so it becomes a carousel of cards.
         pages = split_for_cards(post["text"])
+        user = state["user"]
+        size = min(card_font_size(t, user["name"], user["username"]) for t in pages)
         container = ig_images_container([host_image(make_card(
-            post, state, cfg, text=t, page="{}/{}".format(i, len(pages))))
+            post, state, cfg, text=t, page="{}/{}".format(i, len(pages)), size=size))
             for i, t in enumerate(pages, 1)], caption)
     else:
         container = ig_images_container([host_image(make_card(post, state, cfg))], caption)

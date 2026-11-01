@@ -9,6 +9,10 @@ on:
         description: "Dry run: read from X, show what would be posted, post nothing"
         type: boolean
         default: false
+      recap:
+        description: "With dry run: preview this week's recap instead"
+        type: boolean
+        default: false
       test_post_id:
         description: "Mirror this one X post ID now (for testing)"
         required: false
@@ -56,6 +60,7 @@ jobs:
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           TEST_POST_ID: ${{ inputs.test_post_id }}
+          RECAP: ${{ inputs.recap && '1' || '' }}
 
       - name: Keep dry-run previews (cards, framed charts, Reels)
         if: always() && inputs.dry_run

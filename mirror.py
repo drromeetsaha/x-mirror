@@ -29,8 +29,9 @@ import requests
 from PIL import Image
 from requests_oauthlib import OAuth1
 
-from card import THEMES, URL_RE, card_font_size, render_card, render_chart_frame
-from reel import render_reel
+from card import (CARD_ON_TALL, THEMES, URL_RE, card_font_size, card_on_tall,
+                  render_card, render_chart_frame, render_recap_cover)
+from reel import join_reels, render_reel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(HERE, "state.json")
@@ -40,6 +41,8 @@ X_API = "https://api.x.com/2"
 MAX_ATTEMPTS = 5
 IG_CAPTION_LIMIT = 2200
 CARD_CHARS = 420  # about what a card holds at a readable size
+FB_REEL_MAX = 90  # seconds; Facebook doesn't take longer Reels
+ALT_CHARS = 100  # alt text is read out in full, so keep it short
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 WORK = tempfile.mkdtemp(prefix="x-mirror-")  # charts, frames and Reels for this run
 
@@ -255,12 +258,17 @@ def fit_for_instagram(img, pad_color):
     return out.getvalue()
 
 
+def fb_photo(jpeg):
+    """Upload an image to the Page as an unpublished photo (not shown on the
+    Page by itself); returns its ID."""
+    return graph("POST", "{}/photos".format(page()), data={"published": "false"},
+                 files={"source": ("image.jpg", jpeg, "image/jpeg")})["id"]
+
+
 def host_image(jpeg):
-    """Instagram fetches images from a public URL. Upload the image to the
-    Page as an unpublished photo (never shown on the Page) and use its URL."""
-    photo = graph("POST", "{}/photos".format(page()), data={"published": "false"},
-                  files={"source": ("image.jpg", jpeg, "image/jpeg")})
-    info = graph("GET", photo["id"], params={"fields": "images"})
+    """Instagram fetches images from a public URL: an unpublished Page photo
+    gives the image one."""
+    info = graph("GET", fb_photo(jpeg), params={"fields": "images"})
     return max(info["images"], key=lambda i: i["width"])["source"]
 
 
@@ -298,21 +306,44 @@ def post_date(post, cfg):
     return created.astimezone(tz)
 
 
-def make_card(post, state, cfg, text=None, page=None, size=None):
-    """The post as an image card. text, page ("2/3") and size (font px)
-    make one card of a long post split over several."""
+def make_card_file(post, state, cfg, text=None, page=None, size=None):
+    """The post as an image card; returns the JPEG's path. text, page ("2/3")
+    and size (font px) make one card of a long post split over several."""
     user = state["user"]
     footer = cfg.get("card_footer") or "Follow @{} on X".format(user["username"])
     if page:
         footer = "{}  ·  {}".format(footer, page)
     path = os.path.join(WORK, "card-{}{}.jpg".format(
         post["id"], "-" + page.split("/")[0] if page else ""))
-    render_card(post["text"] if text is None else text, path, user["name"],
-                user["username"], avatar_url=user.get("avatar"),
-                created_at=post_date(post, cfg), quote=post.get("quote"),
-                theme=cfg.get("card_theme", "dark"), footer=footer, size=size)
-    keep_preview(path)
-    return read_bytes(path)
+    if not os.path.exists(path):  # Reel, Story and post share the card
+        render_card(post["text"] if text is None else text, path, user["name"],
+                    user["username"], avatar_url=user.get("avatar"),
+                    created_at=post_date(post, cfg), quote=post.get("quote"),
+                    theme=cfg.get("card_theme", "dark"), footer=footer, size=size)
+        keep_preview(path)
+    return path
+
+
+def make_card(post, state, cfg, **kw):
+    return read_bytes(make_card_file(post, state, cfg, **kw))
+
+
+def is_long(post):
+    """Too long for one readable card (a quoted post stays on one card)."""
+    return not post.get("quote") and len(post["text"]) > CARD_CHARS
+
+
+def card_files(post, state, cfg):
+    """The post's cards as (path, text): one, or a numbered set for a long
+    post, all at the same font size."""
+    if not is_long(post):
+        return [(make_card_file(post, state, cfg), post["text"])]
+    pages = split_for_cards(post["text"])
+    user = state["user"]
+    size = min(card_font_size(t, user["name"], user["username"]) for t in pages)
+    return [(make_card_file(post, state, cfg, text=t,
+                            page="{}/{}".format(i, len(pages)), size=size), t)
+            for i, t in enumerate(pages, 1)]
 
 
 def _wrap(line, limit):
@@ -400,28 +431,66 @@ def frame_chart(post, url, cfg, layout="feed"):
         chart, out, chart_title(post["text"]), cfg.get("ig_handle", ""),
         os.path.join(HERE, cfg.get("frame_logo", cfg["logo_image"])),
         post_date(post, cfg).strftime("%-d %b %Y"), layout=layout,
-        theme=cfg.get("card_theme", "dark"))
+        theme=cfg.get("card_theme", "dark"),
+        ask=cfg.get("frame_ask", "📤 Send to a trader friend"))
     keep_preview(out)
     return out, rect
 
 
-def make_reel(post, url, cfg):
-    """A short Reel of a chart photo, built once per run and shared by
-    Facebook and Instagram."""
+def reading_seconds(text):
+    """How long a card stays on screen in a Reel."""
+    return min(20, max(6, len(text) / 18 + 3))
+
+
+def make_reel(post, state, cfg, kind):
+    """The post as a Reel, built once per run and shared by Facebook and
+    Instagram: its charts one after another ("charts"), or its cards
+    ("cards"), each slowly zooming in."""
     path = os.path.join(WORK, "reel-{}.mp4".format(post["id"]))
-    if not os.path.exists(path):
-        frame, rect = frame_chart(post, url, cfg, layout="reel")
-        render_reel(frame, chart_file(url), rect, path,
-                    seconds=cfg.get("reel_seconds", 10))
-        keep_preview(path)
+    if os.path.exists(path):
+        return path
+    theme = cfg.get("card_theme", "dark")
+    if kind == "charts":
+        photos = split_media(post)[1][:10]
+        each = cfg.get("reel_seconds", 10) if len(photos) == 1 else \
+            cfg.get("reel_seconds_each", 5)
+        slides = []
+        for p in photos:
+            frame, rect = frame_chart(post, p["url"], cfg, layout="reel")
+            slides.append((frame, chart_file(p["url"]), rect, each, 0.2, "right"))
+    else:
+        cards = card_files(post, state, cfg)
+        times = [reading_seconds(t) for _, t in cards]
+        squeeze = min(1, (FB_REEL_MAX - 2) / sum(times))
+        background = os.path.join(WORK, "tall-background.jpg")
+        card_on_tall(None, background, theme, background_only=True)
+        slides = [(background, c, CARD_ON_TALL, round(s * squeeze, 1), 0.04, "center")
+                  for (c, _), s in zip(cards, times)]
+    parts = []
+    for i, (frame, picture, rect, seconds, zoom, anchor) in enumerate(slides):
+        part = os.path.join(WORK, "part-{}-{}.mp4".format(post["id"], i))
+        parts.append(render_reel(frame, picture, rect, part, seconds=seconds,
+                                 zoom=zoom, anchor=anchor))
+    join_reels(parts, path)
+    keep_preview(path)
     return path
 
 
-def wants_reel(post, cfg, platform):
-    """Single-chart posts go out as Reels, which reach people who don't
-    follow the account yet."""
+def reel_kind(post, cfg, platform):
+    """Reels reach people who don't follow the account yet, so most posts go
+    out as one. Returns "charts", "cards", or None to post another way."""
+    if platform not in cfg.get("chart_reels", []):
+        return None
     videos, photos = split_media(post)
-    return not videos and len(photos) == 1 and platform in cfg.get("chart_reels", [])
+    if videos or uses_logo(post, cfg):
+        return None  # a video already goes out as a Reel
+    if photos:
+        return "charts"
+    if not cfg.get("text_reels"):
+        return None
+    if platform == "instagram" and is_long(post):
+        return None  # a carousel reads better than a long run of cards
+    return "cards"
 
 
 def try_reel(platform, upload):
@@ -478,13 +547,22 @@ def split_media(post):
 
 
 def fb_message(post, cfg):
-    if uses_logo(post, cfg) or not cfg.get("disclaimer"):
+    if uses_logo(post, cfg):
         return post["text"]
-    return "{}\n\n{}".format(post["text"], cfg["disclaimer"])
+    return "\n\n".join(p for p in (
+        post["text"], cfg.get("fb_footer"), cfg.get("disclaimer")) if p)
 
 
-def fb_reel_upload(post, url, cfg):
-    video = make_reel(post, url, cfg)
+def fb_album(message, photo_ids):
+    """One Page post showing several unpublished photos."""
+    data = {"message": message}
+    for i, pid in enumerate(photo_ids):
+        data["attached_media[{}]".format(i)] = json.dumps({"media_fbid": pid})
+    graph("POST", "{}/feed".format(page()), data=data)
+
+
+def fb_reel_upload(post, state, cfg, kind):
+    video = make_reel(post, state, cfg, kind)
     start = graph("POST", "{}/video_reels".format(page()), data={"upload_phase": "start"})
     rupload("video-upload", start["video_id"], video)
     return start["video_id"]
@@ -493,9 +571,9 @@ def fb_reel_upload(post, url, cfg):
 def post_facebook(post, state, cfg):
     msg = fb_message(post, cfg)
     videos, photos = split_media(post)
-    reel = None
-    if wants_reel(post, cfg, "facebook"):
-        reel = try_reel("facebook", lambda: fb_reel_upload(post, photos[0]["url"], cfg))
+    reel, kind = None, reel_kind(post, cfg, "facebook")
+    if kind:
+        reel = try_reel("facebook", lambda: fb_reel_upload(post, state, cfg, kind))
     if reel:
         graph("POST", "{}/video_reels".format(page()), data={
             "upload_phase": "finish", "video_id": reel,
@@ -507,12 +585,9 @@ def post_facebook(post, state, cfg):
         graph("POST", "{}/photos".format(page()),
               data={"url": photos[0]["url"] + "?name=large", "message": msg})
     elif photos:
-        data = {"message": msg}
-        for i, p in enumerate(photos):
-            photo = graph("POST", "{}/photos".format(page()),
-                          data={"url": p["url"] + "?name=large", "published": "false"})
-            data["attached_media[{}]".format(i)] = json.dumps({"media_fbid": photo["id"]})
-        graph("POST", "{}/feed".format(page()), data=data)
+        fb_album(msg, [graph("POST", "{}/photos".format(page()), data={
+            "url": p["url"] + "?name=large", "published": "false"})["id"]
+            for p in photos])
     elif uses_logo(post, cfg):
         graph("POST", "{}/photos".format(page()), data={"message": msg},
               files={"source": ("logo.jpg", logo_bytes(cfg, "logo_image"), "image/jpeg")})
@@ -549,8 +624,17 @@ def ig_image(post, url, cfg, pad):
     return fit_for_instagram(download_image(url), pad)
 
 
-def ig_reel_container(post, url, caption, cfg):
-    video = make_reel(post, url, cfg)
+def alt_text(text):
+    text = " ".join(URL_RE.sub("", text).split())
+    return text if len(text) <= ALT_CHARS else text[:ALT_CHARS - 1].rstrip() + "…"
+
+
+def chart_alt(text):
+    return alt_text("Chart: " + (chart_title(text) or "market chart"))
+
+
+def ig_reel_container(post, state, cfg, kind, caption):
+    video = make_reel(post, state, cfg, kind)
     data = {"media_type": "REELS", "upload_type": "resumable",
             "caption": caption, "share_to_feed": "true"}
     if cfg.get("ig_trial_reels"):  # shown to non-followers first
@@ -564,10 +648,10 @@ def ig_reel_container(post, url, caption, cfg):
 
 def post_instagram(post, state, cfg):
     caption = ig_caption(post, state, cfg)
-    container = None
-    if wants_reel(post, cfg, "instagram"):
-        url = split_media(post)[1][0]["url"]
-        container = try_reel("instagram", lambda: ig_reel_container(post, url, caption, cfg))
+    container, kind = None, reel_kind(post, cfg, "instagram")
+    if kind:
+        container = try_reel("instagram", lambda: ig_reel_container(
+            post, state, cfg, kind, caption))
     if not container:
         container = ig_container(post, state, cfg, caption)
     wait_until_ready(container["id"])
@@ -584,33 +668,40 @@ def ig_container(post, state, cfg, caption):
             "caption": caption, "share_to_feed": "true"})
     elif photos:
         urls = [host_image(ig_image(post, p["url"], cfg, pad)) for p in photos[:10]]
-        container = ig_images_container(urls, caption)
+        container = ig_images_container(urls, caption, [chart_alt(post["text"])] * len(urls))
     elif uses_logo(post, cfg):
         container = ig_images_container(
-            [host_image(logo_bytes(cfg, "logo_image_square"))], caption)
-    elif not post.get("quote") and len(post["text"]) > CARD_CHARS:
+            [host_image(logo_bytes(cfg, "logo_image_square"))], caption,
+            ["The ChartRoom logo"])
+    else:
         # A long post shrinks to an unreadable size (or gets cut off) on one
         # card, so it becomes a carousel of cards.
-        pages = split_for_cards(post["text"])
-        user = state["user"]
-        size = min(card_font_size(t, user["name"], user["username"]) for t in pages)
-        container = ig_images_container([host_image(make_card(
-            post, state, cfg, text=t, page="{}/{}".format(i, len(pages)), size=size))
-            for i, t in enumerate(pages, 1)], caption)
-    else:
-        container = ig_images_container([host_image(make_card(post, state, cfg))], caption)
+        cards = card_files(post, state, cfg)
+        container = ig_images_container([host_image(read_bytes(c)) for c, _ in cards],
+                                        caption, [alt_text(t) for _, t in cards])
     return container
 
 
-def ig_images_container(urls, caption):
+def ig_image_item(data, alt):
+    """An image container with alt text, or without it if Instagram refuses."""
+    if alt:
+        try:
+            return graph("POST", "{}/media".format(ig()), data=dict(data, alt_text=alt))
+        except RuntimeError as e:
+            if is_meta_blocked(e) or "alt" not in str(e).lower():
+                raise
+            print("  instagram: alt text refused ({}); posting without it".format(e))
+    return graph("POST", "{}/media".format(ig()), data=data)
+
+
+def ig_images_container(urls, caption, alts=None):
     """One image, or a carousel of up to 10."""
+    alts = alts or [None] * len(urls)
     if len(urls) == 1:
-        return graph("POST", "{}/media".format(ig()),
-                     data={"image_url": urls[0], "caption": caption})
+        return ig_image_item({"image_url": urls[0], "caption": caption}, alts[0])
     children = []
-    for u in urls:
-        child = graph("POST", "{}/media".format(ig()),
-                      data={"image_url": u, "is_carousel_item": "true"})
+    for u, alt in zip(urls, alts):
+        child = ig_image_item({"image_url": u, "is_carousel_item": "true"}, alt)
         wait_until_ready(child["id"])
         children.append(child["id"])
     return graph("POST", "{}/media".format(ig()), data={
@@ -633,7 +724,67 @@ def publish_container(container_id, tries=5, pause=15):
             wait_until_ready(container_id)
 
 
-PLATFORMS = [("facebook", post_facebook), ("instagram", post_instagram)]
+def story_image(post, state, cfg):
+    """A 1080x1920 picture of the post for Stories, or None (videos and logo
+    posts don't get a Story)."""
+    videos, photos = split_media(post)
+    if videos or uses_logo(post, cfg):
+        return None
+    if photos:
+        return frame_chart(post, photos[0]["url"], cfg, layout="reel")[0]
+    out = os.path.join(WORK, "story-{}.jpg".format(post["id"]))
+    card_on_tall(card_files(post, state, cfg)[0][0], out, cfg.get("card_theme", "dark"))
+    keep_preview(out)
+    return out
+
+
+def ig_posts_left():
+    """Instagram allows 50 API posts a day, Stories included."""
+    info = (graph("GET", "{}/content_publishing_limit".format(ig()), params={
+        "fields": "quota_usage,config"}).get("data") or [{}])[0]
+    return info.get("config", {}).get("quota_total", 50) - info.get("quota_usage", 0)
+
+
+def story(platform, post, state, cfg, share):
+    """Also show the post in Stories, which keeps followers coming back. A
+    Story is a bonus: if it fails, the run moves on and doesn't retry."""
+    if platform not in cfg.get("stories", []):
+        return
+    try:
+        image = story_image(post, state, cfg)
+        if image:
+            share(read_bytes(image))
+    except Exception as e:
+        if is_meta_blocked(e):
+            raise
+        print("  {} story skipped: {}".format(platform, e))
+
+
+def ig_story(jpeg):
+    if ig_posts_left() < 10:  # keep the rest of the day's quota for posts
+        print("  instagram story skipped: near the daily posting limit")
+        return
+    container = graph("POST", "{}/media".format(ig()), data={
+        "media_type": "STORIES", "image_url": host_image(jpeg)})
+    wait_until_ready(container["id"])
+    publish_container(container["id"])
+
+
+def fb_story(jpeg):
+    graph("POST", "{}/photo_stories".format(page()), data={"photo_id": fb_photo(jpeg)})
+
+
+def post_instagram_story(post, state, cfg):
+    story("instagram", post, state, cfg, ig_story)
+
+
+def post_facebook_story(post, state, cfg):
+    story("facebook", post, state, cfg, fb_story)
+
+
+PLATFORMS = [("facebook", post_facebook), ("instagram", post_instagram),
+             ("instagram_story", post_instagram_story),
+             ("facebook_story", post_facebook_story)]
 
 # Meta refusing the token itself (app blocked, token revoked or expired). Not
 # the post's fault, so such posts wait instead of using up their attempts.
@@ -666,6 +817,121 @@ def meta_token_warning(state):
         when = datetime.fromtimestamp(expires, timezone.utc).strftime("%d %b %Y")
         return "Meta token access ends {}. Renew it (see README).".format(when)
     return None
+
+
+# ---------------------------------------------------------------- weekly recap
+
+def week_posts(state):
+    """The last 7 days of posts (newest 100), each with a score from its
+    engagement on X, where the audience is already large."""
+    params = dict(POST_FIELDS, exclude="replies,retweets", max_results=100,
+                  start_time=(now_utc() - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    params["tweet.fields"] += ",public_metrics"
+    data = x_get("/users/{}/tweets".format(state["user"]["id"]), params)
+    includes = data.get("includes", {})
+    posts = []
+    for p in data.get("data", []):
+        post = normalize(p, includes)
+        m = p.get("public_metrics", {})
+        post["score"] = (m.get("like_count", 0) + m.get("reply_count", 0) + 2 * (
+            m.get("retweet_count", 0) + m.get("quote_count", 0)
+            + m.get("bookmark_count", 0)))
+        posts.append(post)
+    return posts
+
+
+def build_recap(state, cfg):
+    """The week's best chart posts as one carousel: a cover listing them,
+    then each chart in its frame. None if the week had too few charts."""
+    opts = cfg.get("recap") or {}
+    charts = [p for p in week_posts(state)
+              if split_media(p)[1] and not split_media(p)[0]]
+    if len(charts) < opts.get("min_charts", 3):
+        return None
+    best = sorted(charts, key=lambda p: p["score"], reverse=True)[:opts.get("charts", 9)]
+    best.sort(key=lambda p: int(p["id"]))
+    titles = [chart_title(p["text"], 90) or "Chart" for p in best]
+    days = [post_date(p, cfg).strftime("%-d %b") for p in best]
+    end = now_utc().astimezone(ZoneInfo(cfg.get("timezone", "UTC")))
+    span = "{} – {}".format((end - timedelta(days=6)).strftime("%-d %b"),
+                            end.strftime("%-d %b %Y"))
+    cover = os.path.join(WORK, "recap-cover.jpg")
+    render_recap_cover(list(zip(titles, days)), span, cfg.get("ig_handle", ""),
+                       os.path.join(HERE, cfg.get("frame_logo", cfg["logo_image"])),
+                       cover, theme=cfg.get("card_theme", "dark"))
+    keep_preview(cover)
+    images = [cover] + [frame_chart(p, split_media(p)[1][0]["url"], cfg)[0] for p in best]
+    head = "📊 This week's top charts ({})\n\n{}".format(span, "\n".join(
+        "{}. {} ({})".format(i, t, d) for i, (t, d) in enumerate(zip(titles, days), 1)))
+    caption = "\n\n".join(p for p in (
+        head, "Swipe through 👉", cfg.get("ig_footer", "").format(
+            handle=state["user"]["username"], ig_handle=cfg.get("ig_handle", "")),
+        cfg.get("disclaimer"), " ".join(hashtags_for(" ".join(titles), cfg))) if p)
+    message = "\n\n".join(p for p in (head, cfg.get("fb_footer"), cfg.get("disclaimer")) if p)
+    alts = [alt_text("This week's top charts: " + "; ".join(titles))] + \
+        [alt_text("Chart: " + t) for t in titles]
+    return {"images": images, "caption": caption, "message": message, "alts": alts}
+
+
+def recap_instagram(recap):
+    container = ig_images_container(
+        [host_image(read_bytes(i)) for i in recap["images"]], recap["caption"],
+        recap["alts"])
+    wait_until_ready(container["id"])
+    publish_container(container["id"])
+
+
+def recap_facebook(recap):
+    fb_album(recap["message"], [fb_photo(read_bytes(i)) for i in recap["images"]])
+
+
+def recap_week(cfg):
+    """This week's label ("2026-W44") once the recap is due, else None."""
+    opts = cfg.get("recap") or {}
+    now = now_utc().astimezone(ZoneInfo(cfg.get("timezone", "UTC")))
+    if not opts.get("enabled") or now.weekday() != opts.get("weekday", 6) \
+            or now.hour < opts.get("hour", 11):
+        return None
+    return now.strftime("%G-W%V")
+
+
+def weekly_recap(state, cfg, week):
+    """Post the weekly recap once. A failed platform is retried on the next
+    runs; after 3 tries it gives up for the week. Returns 1 when it gives up
+    (so GitHub emails), else 0."""
+    r = state.get("recap") or {}
+    if r.get("week") != week:
+        r = {"week": week, "done": {}, "tries": 0}
+    state["recap"] = r
+    if r.get("finished"):
+        return 0
+    print("Weekly recap {}".format(week))
+    recap = build_recap(state, cfg)
+    if not recap:
+        print("  too few charts this week; no recap")
+        r["finished"] = True
+        save_state(state)
+        return 0
+    failed = False
+    for name, fn in (("facebook", recap_facebook), ("instagram", recap_instagram)):
+        if r["done"].get(name):
+            continue
+        try:
+            fn(recap)
+            r["done"][name] = True
+            print("  recap {}: posted".format(name))
+        except Exception as e:
+            print("  recap {}: FAILED: {}".format(name, e))
+            if is_meta_blocked(e):
+                save_state(state)
+                return 0  # the token warning covers this; try again later
+            traceback.print_exc()
+            failed = True
+        save_state(state)
+    r["tries"] += failed
+    r["finished"] = not failed or r["tries"] >= 3
+    save_state(state)
+    return int(failed and r["finished"])
 
 
 # ---------------------------------------------------------------- main
@@ -727,6 +993,10 @@ def main():
             state["user"]["checked"]) > timedelta(days=7):
         refresh_profile(state)
 
+    if DRY_RUN and os.environ.get("RECAP"):
+        print("Dry run: previewing this week's recap. Nothing is posted.")
+        sys.exit(weekly_recap(state, cfg, "preview"))
+
     if DRY_RUN and not os.environ.get("TEST_POST_ID"):
         sys.exit(1 if preview_latest(state, cfg) else 0)
 
@@ -776,6 +1046,10 @@ def main():
             state["failed"] = (state["failed"] + [entry])[-20:]
             del state["pending"][pid]
         save_state(state)
+
+    week = recap_week(cfg)
+    if week and not meta_blocked:
+        failures += weekly_recap(state, cfg, week)
 
     if not state["pending"] and failures == 0:
         print("Up to date.")

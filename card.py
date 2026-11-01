@@ -200,7 +200,7 @@ def _even(n):
 
 
 def render_chart_frame(chart_path, out_path, title, handle, logo_path, date_text,
-                       layout="feed", theme="dark"):
+                       layout="feed", theme="dark", ask="📤 Send to a trader friend"):
     """Write the chart inside The ChartRoom frame as a JPEG.
 
     Returns the chart's (x, y, width, height) inside the frame.
@@ -216,8 +216,9 @@ def render_chart_frame(chart_path, out_path, title, handle, logo_path, date_text
     cx, cy = _even(ax + (aw - cw) / 2), _even(ay + (ah - ch) * 0.25)
     foot = ""
     if spec["foot_top"]:
-        foot = ('<div class="foot"><span>📌 Save for later</span>'
-                '<span>Follow <b>@{}</b></span></div>'.format(html.escape(handle)))
+        foot = ('<div class="foot"><span>{}</span>'
+                '<span>Follow <b>@{}</b></span></div>'.format(
+                    html.escape(ask), html.escape(handle)))
     page = FRAME_TEMPLATE.format(
         w=spec["w"], h=spec["h"], pad=spec["pad"], head_top=spec["head_top"],
         title_top=spec["title_top"], title_h=spec["title_h"], font=spec["font"],
@@ -276,4 +277,83 @@ def render_card(text, out_path, name, handle, avatar_url=None, created_at=None,
     """
     page = _card_page(text, name, handle, avatar_url, created_at, quote, theme,
                       footer, size)
+    return _screenshot(page, out_path, WIDTH, HEIGHT)
+
+
+# Where a 4:5 card sits on a 9:16 Reel or Story: a little smaller than full
+# width, so its header clears Instagram's buttons at the top and most of it
+# sits above the caption at the bottom.
+CARD_ON_TALL = (54, 300, 972, 1214)
+
+
+def card_on_tall(card_path, out_path, theme="dark", background_only=False):
+    """Write a 1080x1920 JPEG with the card on it (a Story), or only the
+    background (the still layer of a card Reel). Returns the card's rect."""
+    bg = THEMES.get(theme, THEMES["dark"])["bg"]
+    canvas = Image.new("RGB", (1080, 1920), bg)
+    x, y, w, h = CARD_ON_TALL
+    if not background_only:
+        canvas.paste(Image.open(card_path).convert("RGB").resize((w, h)), (x, y))
+    canvas.save(out_path, "JPEG", quality=92)
+    return CARD_ON_TALL
+
+
+RECAP_TEMPLATE = """<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  html, body {{ width: {w}px; height: {h}px; overflow: hidden; }}
+  body {{
+    background: {bg}; color: {fg};
+    font-family: Inter, -apple-system, "Segoe UI", "Noto Sans", "DejaVu Sans",
+                 sans-serif, "Apple Color Emoji", "Noto Color Emoji";
+    padding: 70px 70px 64px; display: flex; flex-direction: column;
+  }}
+  .logo {{ height: 96px; align-self: flex-start; }}
+  h1 {{ margin-top: 56px; font-size: 84px; line-height: 1.08; font-weight: 800;
+        border-left: 8px solid {gold}; padding-left: 30px; }}
+  .range {{ margin-top: 22px; padding-left: 38px; font-size: 38px; color: {gold};
+            font-weight: 600; }}
+  .main {{ flex: 1; overflow: hidden; padding: 44px 0 24px; }}
+  ol {{ list-style: none; counter-reset: n; }}
+  li {{ counter-increment: n; display: flex; gap: 0.7em; line-height: 1.25;
+        font-weight: 500; padding: 0.42em 0; border-bottom: 2px solid {line}; }}
+  li::before {{ content: counter(n); color: {gold}; font-weight: 800;
+                min-width: 1.3em; }}
+  li .t {{ flex: 1; display: -webkit-box; -webkit-line-clamp: 2;
+           -webkit-box-orient: vertical; overflow: hidden; }}
+  li .d {{ color: {muted}; white-space: nowrap; font-size: 0.8em;
+           padding-top: 0.12em; }}
+  .foot {{ display: flex; justify-content: space-between; font-size: 32px;
+           color: {muted}; border-top: 2px solid {line}; padding-top: 30px; }}
+  .foot b {{ color: {gold}; font-weight: 600; }}
+</style></head><body>
+  <img class="logo" src="{logo}">
+  <h1>{heading}</h1>
+  <div class="range">{range}</div>
+  <div class="main"><ol id="t">{items}</ol></div>
+  <div class="foot"><span>Swipe for the charts →</span><span>Follow <b>@{handle}</b></span></div>
+<script>
+  const main = document.querySelector('.main'), t = document.getElementById('t');
+  let size = 44;
+  t.style.fontSize = size + 'px';
+  const room = main.clientHeight - 68;  // less the padding
+  while (size > 26 && t.scrollHeight > room) {{
+    size -= 2; t.style.fontSize = size + 'px';
+  }}
+</script>
+</body></html>"""
+
+
+def render_recap_cover(items, date_range, handle, logo_path, out_path,
+                       heading="This week's top charts", theme="dark"):
+    """The first slide of the weekly recap: a numbered list of the charts.
+    items: (title, date) pairs."""
+    colors = THEMES.get(theme, THEMES["dark"])
+    items = "".join(
+        '<li><div class="t"><span>{}</span></div><span class="d">{}</span></li>'.format(
+            _highlight(t), html.escape(d)) for t, d in items)
+    page = RECAP_TEMPLATE.format(
+        w=WIDTH, h=HEIGHT, logo="file://" + os.path.abspath(logo_path),
+        heading=html.escape(heading), range=html.escape(date_range), items=items,
+        handle=html.escape(handle), gold=GOLD, **colors)
     return _screenshot(page, out_path, WIDTH, HEIGHT)

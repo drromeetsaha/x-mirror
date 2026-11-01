@@ -39,6 +39,7 @@ CONFIG_PATH = os.path.join(HERE, "config.json")
 X_API = "https://api.x.com/2"
 MAX_ATTEMPTS = 5
 IG_CAPTION_LIMIT = 2200
+CARD_CHARS = 550  # about what a card holds at a readable size
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 WORK = tempfile.mkdtemp(prefix="x-mirror-")  # charts, frames and Reels for this run
 
@@ -297,15 +298,60 @@ def post_date(post, cfg):
     return created.astimezone(tz)
 
 
-def make_card(post, state, cfg):
+def make_card(post, state, cfg, text=None, page=None):
+    """The post as an image card. text and page ("2/3") make one card of
+    a long post split over several."""
     user = state["user"]
-    path = os.path.join(WORK, "card-{}.jpg".format(post["id"]))
-    render_card(post["text"], path, user["name"], user["username"],
-                avatar_url=user.get("avatar"), created_at=post_date(post, cfg),
-                quote=post.get("quote"), theme=cfg.get("card_theme", "dark"),
-                footer=cfg.get("card_footer"))
+    footer = cfg.get("card_footer") or "Follow @{} on X".format(user["username"])
+    if page:
+        footer = "{}  ·  {}".format(footer, page)
+    path = os.path.join(WORK, "card-{}{}.jpg".format(
+        post["id"], "-" + page.split("/")[0] if page else ""))
+    render_card(post["text"] if text is None else text, path, user["name"],
+                user["username"], avatar_url=user.get("avatar"),
+                created_at=post_date(post, cfg), quote=post.get("quote"),
+                theme=cfg.get("card_theme", "dark"), footer=footer)
     keep_preview(path)
     return read_bytes(path)
+
+
+def _wrap(line, limit):
+    while len(line) > limit:
+        cut = line.rfind(" ", 0, limit)
+        cut = cut if cut > 0 else limit
+        yield line[:cut]
+        line = line[cut:].lstrip()
+    yield line
+
+
+def split_for_cards(text, limit=CARD_CHARS, most=10):
+    """Split a long post into card-sized pages, keeping paragraphs whole
+    where they fit. Instagram carousels hold 10 at most."""
+    pages, cur = [], ""
+
+    def add(chunk, sep):
+        nonlocal cur
+        if cur and len(cur) + len(sep) + len(chunk) > limit:
+            pages.append(cur)
+            cur = chunk
+        else:
+            cur = cur + sep + chunk if cur else chunk
+
+    for para in re.split(r"\n\s*\n", text.strip()):
+        if len(para) <= limit:
+            add(para, "\n\n")
+            continue
+        sep = "\n\n"
+        for line in para.split("\n"):
+            for piece in _wrap(line, limit):
+                add(piece, sep)
+                sep = "\n"
+    if cur:
+        pages.append(cur)
+    if len(pages) > most:
+        pages = pages[:most]
+        pages[-1] = pages[-1].rstrip() + " …"
+    return pages
 
 
 def chart_title(text, limit=110):
@@ -522,26 +568,36 @@ def ig_container(post, state, cfg, caption):
             "caption": caption, "share_to_feed": "true"})
     elif photos:
         urls = [host_image(ig_image(post, p["url"], cfg, pad)) for p in photos[:10]]
-        if len(urls) == 1:
-            container = graph("POST", "{}/media".format(ig()),
-                              data={"image_url": urls[0], "caption": caption})
-        else:
-            children = []
-            for u in urls:
-                child = graph("POST", "{}/media".format(ig()),
-                              data={"image_url": u, "is_carousel_item": "true"})
-                wait_until_ready(child["id"])
-                children.append(child["id"])
-            container = graph("POST", "{}/media".format(ig()), data={
-                "media_type": "CAROUSEL", "children": ",".join(children),
-                "caption": caption})
+        container = ig_images_container(urls, caption)
+    elif uses_logo(post, cfg):
+        container = ig_images_container(
+            [host_image(logo_bytes(cfg, "logo_image_square"))], caption)
+    elif not post.get("quote") and len(post["text"]) > CARD_CHARS:
+        # A long post shrinks to an unreadable size (or gets cut off) on one
+        # card, so it becomes a carousel of cards.
+        pages = split_for_cards(post["text"])
+        container = ig_images_container([host_image(make_card(
+            post, state, cfg, text=t, page="{}/{}".format(i, len(pages))))
+            for i, t in enumerate(pages, 1)], caption)
     else:
-        image = logo_bytes(cfg, "logo_image_square") if uses_logo(post, cfg) \
-            else make_card(post, state, cfg)
-        url = host_image(image)
-        container = graph("POST", "{}/media".format(ig()),
-                          data={"image_url": url, "caption": caption})
+        container = ig_images_container([host_image(make_card(post, state, cfg))], caption)
     return container
+
+
+def ig_images_container(urls, caption):
+    """One image, or a carousel of up to 10."""
+    if len(urls) == 1:
+        return graph("POST", "{}/media".format(ig()),
+                     data={"image_url": urls[0], "caption": caption})
+    children = []
+    for u in urls:
+        child = graph("POST", "{}/media".format(ig()),
+                      data={"image_url": u, "is_carousel_item": "true"})
+        wait_until_ready(child["id"])
+        children.append(child["id"])
+    return graph("POST", "{}/media".format(ig()), data={
+        "media_type": "CAROUSEL", "children": ",".join(children),
+        "caption": caption})
 
 
 def publish_container(container_id, tries=5, pause=15):

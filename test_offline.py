@@ -261,4 +261,25 @@ assert mirror.chart_title("#Nifty breakout https://t.co/x\nmore detail") == "#Ni
 long = mirror.chart_title("word " * 40)
 assert long.endswith("…") and len(long) <= 111
 print("ok  chart frame title")
+
+# 13. A long text post becomes a carousel of cards, paragraphs kept whole.
+paras = ["Company {}\nRevenue up {}% and the order book keeps growing nicely.".format(i, i * 7)
+         for i in range(14)]
+long_text = "Q2 FY27: Concalls with Strong Growth Guidance\n\n" + "\n\n".join(paras)
+pages = mirror.split_for_cards(long_text)
+assert len(pages) > 1 and all(len(p) <= mirror.CARD_CHARS for p in pages)
+assert "\n\n".join(pages) == long_text, "nothing lost or reordered"
+assert pages[0].startswith("Q2 FY27")
+assert all(len(p) <= mirror.CARD_CHARS for p in mirror.split_for_cards("x" * 2000 + " end"))
+long_post = {"id": "600", "created_at": None, "media": [], "quote": None, "text": long_text}
+rendered = []
+mirror.make_card = lambda post, state, cfg, text=None, page=None: rendered.append(page) or b"jpg"
+before = len(meta_calls)
+mirror.publish({"post": long_post, "done": {"facebook": True}, "attempts": 0},
+               {"user": {"username": "testuser"}}, cfg)
+calls = meta_calls[before:]
+carousel = [c for c in calls if c[2].get("media_type") == "CAROUSEL"]
+assert len(carousel) == 1 and len(carousel[0][2]["children"].split(",")) == len(pages)
+assert rendered == ["{}/{}".format(i, len(pages)) for i in range(1, len(pages) + 1)]
+print("ok  long text post: carousel of {} cards".format(len(pages)))
 print("ALL TESTS PASSED")

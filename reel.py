@@ -30,9 +30,10 @@ def render_reel(frame_path, chart_path, rect, out_path, seconds=10, zoom=0.2):
     x, y, w, h = rect
     frames = seconds * FPS
     # Scale up first so the slow zoom moves in sub-pixel steps (no jitter).
+    # x keeps the right edge in view: that's where the price scale is.
     chart = ("[1:v]scale={sw}:{sh},"
              "zoompan=z='1+{zoom}*on/{n}':d={n}:s={w}x{h}:fps={fps}"
-             ":x='(iw-iw/zoom)*0.8':y='(ih-ih/zoom)/2',setsar=1[z]").format(
+             ":x='iw-iw/zoom':y='(ih-ih/zoom)/2',setsar=1[z]").format(
                  sw=w * 4, sh=h * 4, zoom=zoom, n=frames, w=w, h=h, fps=FPS)
     # out_range=tv: the JPEG frame is full-range; video players expect TV range.
     video = ("[0:v][z]overlay={}:{}:shortest=1,scale=out_range=tv,"

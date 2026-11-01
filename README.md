@@ -9,11 +9,24 @@ token is not one of the secrets below. GitHub's own `schedule` stays in the
 workflow as a backup, but it proved unreliable.
 
 - **Copies:** original posts and quote posts. Replies and reposts are skipped.
-- **Text-only and quote posts:** an image card is made for Instagram. Quote
-  posts also get the card on Facebook.
-- **Photos and videos:** copied as they are. Several photos become an
-  Instagram carousel; a video becomes a Reel.
-- **Instagram captions:** end with "Follow me on X @handle", set in `config.json`.
+- **Single-chart posts:** become a 10-second **Reel** on Instagram and
+  Facebook. The chart sits in The ChartRoom frame, with the post's first line
+  as a title, and slowly zooms towards the latest candles (`reel.py`). If a
+  Reel fails before anything is published, the photo is posted instead.
+- **Several photos:** an Instagram carousel, each slide framed. On Facebook
+  they are posted as they are.
+- **Text-only and quote posts:** an image card for Instagram. A long post is
+  split into a carousel of numbered cards. Quote posts also get the card on
+  Facebook.
+- **Videos:** copied as they are (a Reel on Instagram).
+- **Instagram captions:** post text, then the save/follow line, a short
+  disclaimer and up to 5 hashtags in all (Instagram's limit), matched from
+  the post's words. Facebook gets the post text and the disclaimer.
+- **Settings** in `config.json`: `ig_footer`, `disclaimer`, `hashtags`
+  (keyword → tag, plus general ones), `chart_reels` (which platforms get
+  Reels; `[]` turns them off), `frame_charts`, `ig_trial_reels` (set to
+  `"SS_PERFORMANCE"` to try Instagram's trial Reels, shown to non-followers
+  first; not yet tested), `card_footer`.
 - **Progress:** kept in `state.json`, which the workflow commits back, so
   nothing is posted twice.
 
@@ -35,6 +48,10 @@ Go to **Actions → Mirror X posts → Run workflow**. Two options:
   anything.
 - **Test post ID:** mirrors one X post right away. The ID is the number at the
   end of the post's URL.
+
+A dry run can also be started on another branch (`gh workflow run mirror.yml
+--ref <branch> -f dry_run=true`) to try changes before merging them into
+`main`. Its `card-previews` artifact holds the cards, frames and Reels.
 
 ## Renewing the Meta token (about every 90 days)
 

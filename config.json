@@ -1,6 +1,7 @@
 {
   "ig_handle": "dr.romeetsaha",
-  "ig_footer": "📌 Save this for later · Follow @{ig_handle} for daily charts",
+  "ig_footer": "📤 Send this to a trader friend · Follow @{ig_handle} for daily charts",
+  "fb_footer": "📤 Share with a trader friend · Follow The ChartRoom for daily charts",
   "disclaimer": "Educational view only, not investment advice.",
   "hashtags": {
     "max": 5,
@@ -27,12 +28,26 @@
     ]
   },
   "frame_charts": true,
+  "frame_ask": "📤 Send to a trader friend",
   "frame_logo": "assets/chartroom-logo-mark.png",
   "chart_reels": [
     "instagram",
     "facebook"
   ],
   "reel_seconds": 10,
+  "reel_seconds_each": 5,
+  "text_reels": true,
+  "stories": [
+    "instagram",
+    "facebook"
+  ],
+  "recap": {
+    "enabled": true,
+    "weekday": 6,
+    "hour": 11,
+    "charts": 9,
+    "min_charts": 3
+  },
   "ig_trial_reels": "",
   "card_footer": "The ChartRoom",
   "card_theme": "dark",

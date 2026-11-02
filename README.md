@@ -67,6 +67,12 @@ A dry run can also be started on another branch (`gh workflow run mirror.yml
 `main`. Its `card-previews` artifact holds the cards, frames, Stories and
 Reels. Tick **recap** as well to preview this week's recap instead.
 
+## Ads report
+
+**Actions → Ads report → Run workflow** prints the Meta ads' spend, reach,
+results and cost per result, plus follower counts (`ads_report.py`, read-only,
+uses the `META_ADS_TOKEN` secret of the `chartroom-ads` system user).
+
 ## Renewing the Meta token (about every 90 days)
 
 When access is 10 days from ending, one run a day fails and GitHub emails you.

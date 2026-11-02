@@ -1,0 +1,23 @@
+name: Ads report
+
+# Read-only: prints how the Meta ads are doing. Started by hand or by a
+# scheduled check (gh workflow run ads-report.yml).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ads report
+        env:
+          META_ADS_TOKEN: ${{ secrets.META_ADS_TOKEN }}
+        run: python ads_report.py

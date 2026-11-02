@@ -10,7 +10,8 @@ GRAPH = "https://graph.facebook.com/v26.0/"
 AD_ACCOUNT = "act_1064546756636439"
 PAGE_ID = "1199609839893751"
 IG_USER_ID = "17841475622662431"
-RESULTS = {"PROFILE_VISIT": "ig_profile_visit", "PAGE_LIKES": "like"}
+# Meta reports Instagram profile visits from an ad as link clicks.
+RESULTS = {"PROFILE_VISIT": "link_click", "PAGE_LIKES": "like"}
 
 
 def get(path, **params):

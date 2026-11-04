@@ -527,6 +527,13 @@ def hashtags_for(text, cfg):
     return tags
 
 
+def is_skipped(post, cfg):
+    """Posts carrying a link from skip_link_match (the paid group's Cosmofeed
+    link) stay on X only: no Facebook, Instagram, Story or recap."""
+    text = post["text"] + " " + ((post.get("quote") or {}).get("text") or "")
+    return any(m in text for m in cfg.get("skip_link_match", []))
+
+
 def uses_logo(post, cfg):
     """Text posts carrying a join link (e.g. the Telegram link) go out as the
     text itself plus the logo, not as a card, so the link stays usable."""
@@ -845,7 +852,7 @@ def build_recap(state, cfg):
     then each chart in its frame. None if the week had too few charts."""
     opts = cfg.get("recap") or {}
     charts = [p for p in week_posts(state)
-              if split_media(p)[1] and not split_media(p)[0]]
+              if split_media(p)[1] and not split_media(p)[0] and not is_skipped(p, cfg)]
     if len(charts) < opts.get("min_charts", 3):
         return None
     best = sorted(charts, key=lambda p: p["score"], reverse=True)[:opts.get("charts", 9)]
@@ -949,6 +956,9 @@ def preview_latest(state, cfg, count=5):
         if post.get("quote"):
             kinds.append("quote of @" + post["quote"]["handle"])
         print("\nPost {} ({}): {!r}".format(post["id"], ", ".join(kinds), post["text"][:120]))
+        if is_skipped(post, cfg):
+            print("  skipped: has a skip_link_match link, stays on X only")
+            continue
         print("  Instagram caption ends: {!r}".format(ig_caption(post, state, cfg)[-220:]))
         entry = {"post": post, "done": {}, "attempts": 0}
         failures += publish(entry, state, cfg) + bool(entry.get("meta_blocked"))
@@ -1003,6 +1013,9 @@ def main():
     if os.environ.get("TEST_POST_ID"):
         post = fetch_one_post(os.environ["TEST_POST_ID"])
         print("Test post {}: {!r}".format(post["id"], post["text"][:80]))
+        if is_skipped(post, cfg):
+            print("  skipped: has a skip_link_match link, stays on X only")
+            return
         entry = {"post": post, "done": {}, "attempts": 0}
         failures = publish(entry, state, cfg) + bool(entry.get("meta_blocked"))
         state.pop("token_checked", None)  # always check the token on a test
@@ -1021,6 +1034,9 @@ def main():
 
     for post in fetch_new_posts(state):
         print("New post {}: {!r}".format(post["id"], post["text"][:80]))
+        if is_skipped(post, cfg):
+            print("  skipped: has a skip_link_match link, stays on X only")
+            continue
         state["pending"][post["id"]] = {"post": post, "done": {}, "attempts": 0}
     save_state(state)
 

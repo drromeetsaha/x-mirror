@@ -9,6 +9,9 @@ token is not one of the secrets below. GitHub's own `schedule` stays in the
 workflow as a backup, but it proved unreliable.
 
 - **Copies:** original posts and quote posts. Replies and reposts are skipped.
+- **Stays on X:** any post (or quoted post) with a link from `skip_link_match`
+  (the paid group's Cosmofeed link) is never copied, and never appears in a
+  Story or the weekly recap.
 - **Reels:** most posts go out as a **Reel** on Instagram and Facebook,
   because Reels are what both apps show to people who don't follow yet
   (`reel.py`). A chart sits in The ChartRoom frame, with the post's first
@@ -33,7 +36,7 @@ workflow as a backup, but it proved unreliable.
   the post's words. Facebook gets the text, its own share line and the
   disclaimer. Instagram images carry short alt text.
 - **Settings** in `config.json`: `ig_footer`, `fb_footer`, `frame_ask`,
-  `disclaimer`, `hashtags` (keyword → tag, plus general ones), `chart_reels`
+  `disclaimer`, `skip_link_match` (links that keep a post on X only), `hashtags` (keyword → tag, plus general ones), `chart_reels`
   (which platforms get Reels; `[]` turns them off), `text_reels` (Reels for
   text posts too), `reel_seconds`, `reel_seconds_each`, `stories` (`[]` turns
   them off), `recap` (`enabled`, `weekday` 0=Mon…6=Sun, `hour`, `charts`,

@@ -155,6 +155,23 @@ assert "since_id" in x_calls[-1][1]
 assert not any(c[1].startswith("PAGE/feed") for c in meta_calls[before:])
 print("ok  retry posts only to Instagram, then pending is empty")
 
+# 3b. A post with the paid group's Cosmofeed link stays on X only.
+cosmo = {"data": [{"id": "104", "text": "Join the group https://t.co/c",
+                   "created_at": "2026-10-25T06:00:00.000Z",
+                   "attachments": {"media_keys": ["3_1"]},
+                   "entities": {"urls": [{"url": "https://t.co/c",
+                                          "expanded_url": "https://cosmofeed.com/vig/683f9c20"}]}}],
+         "includes": TIMELINE["includes"], "meta": {"newest_id": "104"}}
+timeline_queue.append(cosmo)
+before = len(meta_calls)
+assert run() == 0
+state = mirror.load_json(mirror.STATE_PATH, {})
+assert "104" not in state["pending"] and state["since_id"] == "104"
+assert not any("104" in str(c) or "Join the group" in str(c) for c in meta_calls[before:])
+quoting = {"id": "1", "text": "see", "media": [], "quote": {"text": "cosmofeed.com/vig/1"}}
+assert mirror.is_skipped(quoting, mirror.load_json(mirror.CONFIG_PATH, {}))
+print("ok  Cosmofeed-link post skipped on Facebook and Instagram")
+
 # 4. Tall image is padded to Instagram's 4:5 limit.
 jpeg = mirror.fit_for_instagram(Image.new("RGB", (900, 1600)), "#000000")
 import io
@@ -169,10 +186,11 @@ data = mirror.make_card(post, {"user": {"name": "Test User", "username": "testus
 assert Image.open(io.BytesIO(data)).size == (1080, 1350)
 print("ok  card renders 1080x1350")
 
-# 6. A text post with the Telegram join link goes out as text + logo, no card.
+# 6. A text post with a logo_link_match join link goes out as text + logo, no card.
 cfg = mirror.load_json(mirror.CONFIG_PATH, {})
+cfg["logo_link_match"] = ["t.me/"]
 link_post = {"id": "200", "created_at": None, "media": [], "quote": None,
-             "text": "Join telegram here: https://cosmofeed.com/vig/683f9c20"}
+             "text": "Join telegram here: https://t.me/chartroom"}
 assert mirror.uses_logo(link_post, cfg)
 assert not mirror.uses_logo(dict(link_post, text="no link here"), cfg)
 assert not mirror.uses_logo(dict(link_post, media=[{"type": "photo", "url": "u"}]), cfg)
@@ -184,7 +202,7 @@ calls = meta_calls[before:]
 fb = calls[0]
 assert fb[1] == "PAGE/photos" and fb[2]["message"] == link_post["text"] and fb[3]
 ig_caption = [c for c in calls if c[1] == "IG/media"][0][2]["caption"]
-assert "https://cosmofeed.com/vig/683f9c20" in ig_caption
+assert "https://t.me/chartroom" in ig_caption
 print("ok  join-link post: full text + logo on FB and IG, no card")
 
 # 7. Meta blocking the token: the post waits (no attempts used), one email a day.
@@ -303,7 +321,7 @@ print("ok  long text post: carousel of {} cards on Instagram, with alt text".for
 # 14. Which posts become Reels where.
 assert mirror.reel_kind(long_post, cfg, "instagram") is None
 assert mirror.reel_kind(long_post, cfg, "facebook") == "cards"
-assert mirror.reel_kind(link_post, cfg, "facebook") is None
+assert mirror.reel_kind(link_post, dict(cfg, logo_link_match=["t.me/"]), "facebook") is None
 two = dict(chart_post, id="700", media=[{"type": "photo", "url": "u1"},
                                         {"type": "photo", "url": "u2"}])
 assert mirror.reel_kind(two, cfg, "instagram") == "charts"
@@ -330,11 +348,12 @@ def chart(i, likes):
             "created_at": "2026-10-2{}T05:00:00.000Z".format(i),
             "attachments": {"media_keys": ["k{}".format(i)]},
             "public_metrics": {"like_count": likes}}
-week = {"data": [chart(i, likes) for i, likes in enumerate([5, 50, 1, 30, 20])]
+paid = dict(chart(5, 999), text="Join https://cosmofeed.com/vig/1")
+week = {"data": [chart(i, likes) for i, likes in enumerate([5, 50, 1, 30, 20])] + [paid]
         + [{"id": "799", "text": "just words", "public_metrics": {"like_count": 999}}],
         "includes": {"media": [{"media_key": "k{}".format(i), "type": "photo",
                                 "url": "https://pbs.twimg.com/c{}.jpg".format(i)}
-                               for i in range(5)]}}
+                               for i in range(6)]}}
 cfg["recap"] = dict(cfg["recap"], charts=4)
 timeline_queue[:] = [week]
 before = len(meta_calls)
@@ -353,6 +372,7 @@ assert fb_post["message"].startswith("📊 This week's top charts") and "attache
 assert state["recap"]["finished"] and state["recap"]["done"] == {"facebook": True, "instagram": True}
 before = len(meta_calls)
 assert mirror.weekly_recap(state, cfg, "2026-W44") == 0 and len(meta_calls) == before
+assert "cosmofeed" not in ig_post["caption"], "paid-link chart left out"
 print("ok  weekly recap: cover + best 4 charts on both, posted once")
 
 # 18. The recap is due on Sunday from 11:00 India time, not before.

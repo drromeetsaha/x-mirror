@@ -51,6 +51,14 @@ def main():
             print("  results ({}): {} ({})".format(key, hits, cost))
             print("  all actions: " + ", ".join("{}={}".format(k, v)
                                                 for k, v in sorted(actions.items())))
+            parts = get(s["id"] + "/insights", date_preset="maximum",
+                        breakdowns="publisher_platform,platform_position",
+                        fields="spend,impressions,actions").get("data", [])
+            for p in parts:
+                acts = {a["action_type"]: int(float(a["value"])) for a in p.get("actions", [])}
+                print("    {} {}: spend ₹{} · impressions {} · results {} · video views {}".format(
+                    p["publisher_platform"], p["platform_position"], p["spend"],
+                    p["impressions"], acts.get(key, 0), acts.get("video_view", 0)))
         ads = get(s["id"] + "/ads", fields="name,effective_status,issues_info")
         for a in ads.get("data", []):
             print("  ad {}: {}".format(a["name"], a["effective_status"]))

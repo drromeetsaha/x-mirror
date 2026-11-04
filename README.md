@@ -71,7 +71,9 @@ Reels. Tick **recap** as well to preview this week's recap instead.
 
 **Actions → Ads report → Run workflow** prints the Meta ads' spend, reach,
 results and cost per result, plus follower counts (`ads_report.py`, read-only,
-uses the `META_ADS_TOKEN` secret of the `chartroom-ads` system user).
+uses the `META_ADS_TOKEN` secret of the `chartroom-ads` system user), with a
+breakdown by placement. **Actions → Ads change** swapped the Instagram ad for
+v2 on 2026-11-04 (`ads_change.py`; "check" validates, "apply" changes).
 
 ## Renewing the Meta token (about every 90 days)
 

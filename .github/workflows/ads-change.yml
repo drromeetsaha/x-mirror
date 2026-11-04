@@ -1,0 +1,31 @@
+name: Ads change
+
+# Swaps the Instagram ad for v2 (ads_change.py). Started by hand only:
+# "check" validates without changing anything, "apply" makes the change.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "check or apply"
+        default: check
+        type: choice
+        options: [check, apply]
+
+permissions:
+  contents: read
+
+jobs:
+  change:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Ads change
+        env:
+          META_ADS_TOKEN: ${{ secrets.META_ADS_TOKEN }}
+          MODE: ${{ inputs.mode }}
+        run: python ads_change.py

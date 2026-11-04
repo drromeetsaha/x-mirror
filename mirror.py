@@ -1,4 +1,4 @@
-"""Mirror new X posts to a Facebook Page and Instagram.
+"""Mirror new X posts to a Facebook Page, Instagram and Threads.
 
 Runs every few minutes from GitHub Actions (.github/workflows/mirror.yml).
 Each run reads only the posts newer than the last one it saw, then publishes
@@ -8,6 +8,7 @@ workflow commits back, so nothing is posted twice.
 Environment:
   X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET   X app user keys
   FB_PAGE_ID, FB_PAGE_TOKEN, IG_USER_ID                       Meta IDs/token
+  THREADS_USER_ID, THREADS_TOKEN   Threads account; Threads is skipped without them
   DRY_RUN=1        read from X but print what would be posted; save nothing
   TEST_POST_ID=id  mirror this one post now, ignoring state
 """
@@ -43,6 +44,8 @@ IG_CAPTION_LIMIT = 2200
 CARD_CHARS = 420  # about what a card holds at a readable size
 FB_REEL_MAX = 90  # seconds; Facebook doesn't take longer Reels
 ALT_CHARS = 100  # alt text is read out in full, so keep it short
+THREADS_API = "https://graph.threads.net/v1.0/"
+THREADS_CHARS = 500  # Threads' limit per post; longer text continues in replies
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 WORK = tempfile.mkdtemp(prefix="x-mirror-")  # charts, frames and Reels for this run
 
@@ -789,8 +792,128 @@ def post_facebook_story(post, state, cfg):
     story("facebook", post, state, cfg, fb_story)
 
 
+# ---------------------------------------------------------------- Threads
+
+def threads_api(method, path, data=None, params=None):
+    if DRY_RUN:
+        print("    [dry run] threads {} {} {}".format(method, path, {
+            k: (str(v)[:80]) for k, v in (data or {}).items()}))
+        return {"id": "dry-run", "status": "FINISHED"}
+    payload = dict(data or {}, access_token=os.environ["THREADS_TOKEN"])
+    if method == "GET":
+        resp = requests.get(THREADS_API + path, params=dict(params or {}, **payload), timeout=60)
+    else:
+        resp = requests.post(THREADS_API + path, data=payload, timeout=120)
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {}
+    if resp.status_code >= 400 or "error" in body:
+        msg = body.get("error", {}).get("message") or resp.text[:300]
+        raise RuntimeError("Threads API {} on {}: {}".format(resp.status_code, path, msg))
+    return body
+
+
+def threads_text(post, cfg):
+    """The post's text split into Threads-sized parts, the disclaimer and one
+    topic tag (Threads shows a single tag per post) on the last part."""
+    tags = hashtags_for(post["text"], cfg)
+    tail = "\n\n".join(p for p in (cfg.get("disclaimer"), tags[0] if tags else "") if p)
+    text = post["text"]
+    if len(text) + 2 + len(tail) <= THREADS_CHARS:
+        return ["\n\n".join(p for p in (text, tail) if p)]
+    parts = split_for_cards(text, THREADS_CHARS - 10, most=10)
+    if len(parts[-1]) + 2 + len(tail) <= THREADS_CHARS:
+        parts[-1] = parts[-1] + "\n\n" + tail
+    else:
+        parts.append(tail)
+    return parts
+
+
+def threads_ready(container_id, timeout=300):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = threads_api("GET", container_id, params={"fields": "status,error_message"})
+        if status.get("status") in (None, "FINISHED", "PUBLISHED"):
+            return
+        if status.get("status") in ("ERROR", "EXPIRED"):
+            raise RuntimeError("Threads could not process media: {}".format(
+                status.get("error_message", status["status"])))
+        time.sleep(5)
+    raise RuntimeError("Threads media still processing after {}s".format(timeout))
+
+
+def threads_publish(data):
+    """Create a container, wait for it, publish it; returns the post's ID."""
+    user = os.environ["THREADS_USER_ID"]
+    container = threads_api("POST", "{}/threads".format(user), data=data)["id"]
+    threads_ready(container)
+    return threads_api("POST", "{}/threads_publish".format(user),
+                       data={"creation_id": container})["id"]
+
+
+def post_threads(post, state, cfg):
+    """The post on Threads: framed charts, the video, or a card for a quote,
+    with long text continuing in replies. Skipped until Threads is set up."""
+    if not (os.environ.get("THREADS_TOKEN") and os.environ.get("THREADS_USER_ID")):
+        return
+    pad = THEMES.get(cfg.get("card_theme", "dark"), THEMES["dark"])["bg"]
+    parts = threads_text(post, cfg)
+    videos, photos = split_media(post)
+    first = {"text": parts[0]}
+    if videos:
+        first.update(media_type="VIDEO", video_url=videos[0]["url"])
+    elif photos:
+        urls = [host_image(ig_image(post, p["url"], cfg, pad)) for p in photos[:20]]
+        alt = chart_alt(post["text"])
+        if len(urls) == 1:
+            first.update(media_type="IMAGE", image_url=urls[0], alt_text=alt)
+        else:
+            user = os.environ["THREADS_USER_ID"]
+            children = []
+            for u in urls:
+                child = threads_api("POST", "{}/threads".format(user), data={
+                    "media_type": "IMAGE", "image_url": u, "is_carousel_item": "true",
+                    "alt_text": alt})["id"]
+                threads_ready(child)
+                children.append(child)
+            first.update(media_type="CAROUSEL", children=",".join(children))
+    elif post.get("quote"):
+        first.update(media_type="IMAGE", image_url=host_image(make_card(post, state, cfg)),
+                     alt_text=alt_text(post["text"]))
+    else:
+        first["media_type"] = "TEXT"
+    reply_to = threads_publish(first)
+    for part in parts[1:]:
+        reply_to = threads_publish({"media_type": "TEXT", "text": part,
+                                    "reply_to_id": reply_to})
+
+
+def threads_token_warning():
+    """Threads tokens last 60 days; refreshing extends them. Returns a warning
+    when the token can't be refreshed or ends within 10 days."""
+    if not os.environ.get("THREADS_TOKEN") or DRY_RUN:
+        return None
+    try:
+        resp = requests.get("https://graph.threads.net/refresh_access_token", params={
+            "grant_type": "th_refresh_token",
+            "access_token": os.environ["THREADS_TOKEN"]}, timeout=60).json()
+    except (requests.RequestException, ValueError) as e:
+        return "Threads token refresh failed: {}".format(e)
+    if "error" in resp:
+        return "Threads token refresh failed: {}. Renew it (see README).".format(
+            resp["error"].get("message"))
+    if resp.get("access_token") != os.environ["THREADS_TOKEN"]:
+        print("  threads: Meta returned a new token; THREADS_TOKEN keeps working "
+              "until it ends, then renew it (see README)")
+    if resp.get("expires_in", 10 ** 9) < 10 * 86400:
+        return "Threads token ends in {} days. Renew it (see README).".format(
+            resp["expires_in"] // 86400)
+    return None
+
+
 PLATFORMS = [("facebook", post_facebook), ("instagram", post_instagram),
-             ("instagram_story", post_instagram_story),
+             ("threads", post_threads), ("instagram_story", post_instagram_story),
              ("facebook_story", post_facebook_story)]
 
 # Meta refusing the token itself (app blocked, token revoked or expired). Not
@@ -801,16 +924,26 @@ META_BLOCKED = ("Cannot call API for app", "API access blocked",
 
 
 def is_meta_blocked(error):
+    """Only the Page token: a Threads token problem fails Threads alone."""
+    if str(error).startswith("Threads"):
+        return False
     return any(s in str(error) for s in META_BLOCKED)
 
 
 def meta_token_warning(state):
-    """Once a day, check when Meta's 90-day data access for the Page token
-    lapses. Returns a warning when it is under 10 days away."""
+    """Once a day, check the Page and Threads tokens. Returns a warning when
+    either is failing or under 10 days from ending."""
     today = now_utc().date().isoformat()
     if state.get("token_checked") == today:
         return None
     state["token_checked"] = today
+    page_warning = page_token_warning()
+    threads = threads_token_warning()
+    return " ".join(w for w in (page_warning, threads) if w) or None
+
+
+def page_token_warning():
+    """When Meta's 90-day data access for the Page token lapses."""
     token = os.environ["FB_PAGE_TOKEN"]
     try:
         info = graph("GET", "debug_token", params={"input_token": token}).get("data", {})

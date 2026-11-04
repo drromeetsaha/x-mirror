@@ -114,8 +114,8 @@ assert timeline_params["exclude"] == "replies,retweets"
 assert "start_time" in timeline_params and "since_id" not in timeline_params
 assert state["since_id"] == "103"
 assert list(state["pending"]) == ["101"]
-assert state["pending"]["101"]["done"] == {
-    "facebook": True, "instagram_story": True, "facebook_story": True}
+assert state["pending"]["101"]["done"] == {  # Threads not set up: a no-op
+    "facebook": True, "threads": True, "instagram_story": True, "facebook_story": True}
 print("ok  failed Instagram post kept for retry (no email yet), Facebook not repeated")
 
 # All three posts (text, quote, chart) went out as Reels on both.
@@ -264,7 +264,7 @@ before = len(meta_calls)
 entry = {"post": chart_post, "done": {}, "attempts": 0}
 assert mirror.publish(entry, state, cfg) == 0
 calls = meta_calls[before:]
-assert entry["done"] == {"facebook": True, "instagram": True,
+assert entry["done"] == {"facebook": True, "instagram": True, "threads": True,
                          "instagram_story": True, "facebook_story": True}
 assert any(c[1] == "PAGE/photos" and c[2].get("message", "").startswith("Look at this chart")
            for c in calls)
@@ -389,4 +389,34 @@ before = len(meta_calls)
 assert mirror.weekly_recap(state, cfg, "2026-W45") == 0 and len(meta_calls) == before
 assert state["recap"]["finished"]
 print("ok  recap due Sunday 11:00 IST; skipped in a week with too few charts")
+# 19. Threads: framed chart as an image, text with disclaimer and one tag,
+# long text continuing in replies, nothing at all until Threads is set up.
+threads_calls = []
+def fake_threads(method, path, data=None, params=None):
+    threads_calls.append((method, path, dict(data or {})))
+    return {"id": "t{}".format(len(threads_calls)), "status": "FINISHED"}
+mirror.threads_api = fake_threads
+cfg = mirror.load_json(mirror.CONFIG_PATH, {})
+st = {"user": {"username": "testuser", "name": "Test User"}}
+mirror.post_threads(chart_post, st, cfg)
+assert not threads_calls, "no Threads calls without THREADS_TOKEN"
+os.environ.update(THREADS_TOKEN="tok", THREADS_USER_ID="TH")
+mirror.post_threads(chart_post, st, cfg)
+create, publish = threads_calls[0], threads_calls[-1]
+assert create[1] == "TH/threads" and create[2]["media_type"] == "IMAGE"
+assert create[2]["image_url"] == "https://cdn.example/l.jpg"
+assert create[2]["text"].startswith("Look at this chart") and DISCLAIMER in create[2]["text"]
+assert len(create[2]["text"]) <= 500 and create[2]["text"].count("#") <= 1
+assert publish[1] == "TH/threads_publish" and publish[2]["creation_id"] == "t1"
+threads_calls.clear()
+mirror.post_threads(long_post, st, cfg)
+made = [c[2] for c in threads_calls if c[1] == "TH/threads"]
+assert made[0]["media_type"] == "TEXT" and len(made) > 1
+assert all(len(m["text"]) <= 500 for m in made)
+assert all(m["reply_to_id"] for m in made[1:]) and "reply_to_id" not in made[0]
+assert DISCLAIMER in made[-1]["text"] and DISCLAIMER not in made[0]["text"]
+assert "".join(m["text"] for m in made).count("Q2 FY27") == 1
+print("ok  Threads: chart image, long text as a reply chain, off without a token")
+del os.environ["THREADS_TOKEN"], os.environ["THREADS_USER_ID"]
+
 print("ALL TESTS PASSED")

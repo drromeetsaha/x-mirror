@@ -43,6 +43,7 @@ def must(j, what):
 
 spec = must(call("GET", FB_CREATIVE, fields="object_story_spec"), "read creative")["object_story_spec"]
 spec["video_data"].pop("call_to_action", None)
+spec["video_data"].pop("image_url", None)   # keep image_hash only
 print("Creative text: " + json.dumps(spec["video_data"].get("message")))
 
 start = datetime.now(timezone.utc)
@@ -67,13 +68,8 @@ def adset_args(campaign_id, positions, promoted, status):
     return a
 
 
-camp_args = dict(name=CAMPAIGN_NAME, objective="OUTCOME_ENGAGEMENT", special_ad_categories=[],
-                 is_adset_budget_sharing_enabled=False, status="ACTIVE")
-must(call("POST", AD_ACCOUNT + "/campaigns", execution_options=["validate_only"], **camp_args),
-     "campaign check")
-print("check: campaign accepted.")
-camp = must(call("POST", AD_ACCOUNT + "/campaigns", **camp_args), "create campaign")["id"]
-print("Campaign created: " + camp)
+camp = "52598536521908"   # empty campaign created by the first run of this script
+print("Using campaign: " + camp)
 
 chosen = None
 for positions in (True, False):

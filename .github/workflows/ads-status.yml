@@ -1,0 +1,27 @@
+name: Ads ad status
+
+# Read-only: prints the review details of one ad (ads_status.py).
+on:
+  workflow_dispatch:
+    inputs:
+      ad_id:
+        description: "Ad ID"
+        default: "52598526935908"
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ad status
+        env:
+          META_ADS_TOKEN: ${{ secrets.META_ADS_TOKEN }}
+          AD_ID: ${{ inputs.ad_id }}
+        run: python ads_status.py

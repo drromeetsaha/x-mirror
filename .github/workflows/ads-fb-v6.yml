@@ -1,0 +1,32 @@
+name: Ads new Facebook ad
+
+# Creates the v6 Facebook Page-likes ad, paused (ads_fb_v6.py). Started by hand
+# only: "check" validates without creating anything, "apply" creates the ad set
+# and ad PAUSED. Nothing is switched on and no existing ad is changed.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "check or apply"
+        default: check
+        type: choice
+        options: [check, apply]
+
+permissions:
+  contents: read
+
+jobs:
+  change:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Ads new Facebook ad
+        env:
+          META_ADS_TOKEN: ${{ secrets.META_ADS_TOKEN }}
+          MODE: ${{ inputs.mode }}
+        run: python ads_fb_v6.py

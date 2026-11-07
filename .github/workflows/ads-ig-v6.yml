@@ -1,0 +1,23 @@
+name: Ads Instagram v6
+
+# Creates the Instagram v6 ad and switches it on (ads_ig_v6.py). By hand only.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Create Instagram ad
+        env:
+          META_ADS_TOKEN: ${{ secrets.META_ADS_TOKEN }}
+        run: python ads_ig_v6.py

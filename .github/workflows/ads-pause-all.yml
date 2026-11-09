@@ -1,0 +1,23 @@
+name: Ads pause all
+
+# Pauses every active campaign, ad set and ad (ads_pause_all.py). By hand only.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pause:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Pause all
+        env:
+          META_ADS_TOKEN: ${{ secrets.META_ADS_TOKEN }}
+        run: python ads_pause_all.py

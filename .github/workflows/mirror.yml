@@ -1,0 +1,94 @@
+name: Mirror X posts
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes (GitHub may run it a little late)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: read from X, show what would be posted, post nothing"
+        type: boolean
+        default: false
+      recap:
+        description: "With dry run: preview this week's recap instead"
+        type: boolean
+        default: false
+      test_post_id:
+        description: "Mirror this one X post ID now (for testing)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The branch this run was started on (main for the timer), at its
+          # latest commit: fresh state.json even if the run waited in the queue.
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Install card fonts
+        run: |
+          # Retry: the runner's DNS/apt mirror occasionally fails for a minute.
+          for i in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update -qq \
+              && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y -qq fonts-inter fonts-noto-color-emoji \
+              && exit 0
+            echo "Font install attempt $i failed; retrying in 15s"
+            sleep 15
+          done
+          exit 1
+
+      - name: Mirror new posts
+        run: python mirror.py
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          TEST_POST_ID: ${{ inputs.test_post_id }}
+          RECAP: ${{ inputs.recap && '1' || '' }}
+
+      - name: Keep dry-run previews (cards, framed charts, Reels)
+        if: always() && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: card-previews
+          path: previews/
+          if-no-files-found: ignore
+
+      - name: Save progress
+        if: always()
+        run: |
+          git config user.name "x-mirror-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json 2>/dev/null || exit 0
+          git diff --cached --quiet && exit 0
+          git commit -m "Update mirror state"
+          for i in 1 2 3; do
+            git pull --rebase -q origin main && git push -q origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1

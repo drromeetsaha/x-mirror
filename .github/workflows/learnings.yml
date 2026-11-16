@@ -1,0 +1,88 @@
+name: Post learning video
+
+# Posts the daily ChartRoom learning video (sent to Telegram at 7 PM by the Grok
+# Bot routine) to the Facebook Page and Instagram. Never posts to X.
+# Started by an issue titled "learning-video ..." opened by the repo owner
+# (Bella opens it after the Telegram send), or by hand from the Actions tab.
+# Issue body:  file_id: <Telegram file_id>   then   caption: <text>
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      file_id:
+        description: "Telegram file_id of the mp4"
+        required: true
+      caption:
+        description: "Caption text"
+        required: true
+      platforms:
+        description: "Where to post"
+        type: choice
+        default: both
+        options: [both, facebook, instagram]
+      dry_run:
+        description: "Dry run: download the video, post nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: learnings
+  cancel-in-progress: false
+
+jobs:
+  post:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.author_association == 'OWNER' &&
+       startsWith(github.event.issue.title, 'learning-video'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Post learning video
+        run: python learnings_post.py
+        env:
+          LEARNINGS_BOT_TOKEN: ${{ secrets.LEARNINGS_BOT_TOKEN }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          FILE_ID: ${{ inputs.file_id }}
+          CAPTION: ${{ inputs.caption }}
+          PLATFORMS: ${{ inputs.platforms }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+
+      - name: Keep dry-run video
+        if: always() && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: lesson-preview
+          path: previews/
+          if-no-files-found: ignore
+
+      - name: Report on the issue
+        if: always() && github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          result="$(cat learnings_result.txt 2>/dev/null || echo 'no result file')"
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "Status: $JOB_STATUS
+          $result
+          Run: $RUN_URL"
+          gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY"

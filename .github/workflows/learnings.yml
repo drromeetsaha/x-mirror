@@ -4,6 +4,7 @@ name: Post learning video
 # Bot routine) to the Facebook Page and Instagram. Never posts to X.
 # Started by an issue titled "learning-video ..." opened by the repo owner
 # (Bella opens it after the Telegram send), or by hand from the Actions tab.
+# A title that also contains "dry-run" downloads the video and posts nothing.
 # Issue body:  file_id: <Telegram file_id>   then   caption: <text>
 on:
   issues:
@@ -63,10 +64,10 @@ jobs:
           FILE_ID: ${{ inputs.file_id }}
           CAPTION: ${{ inputs.caption }}
           PLATFORMS: ${{ inputs.platforms }}
-          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          DRY_RUN: ${{ (inputs.dry_run || contains(github.event.issue.title, 'dry-run')) && '1' || '' }}
 
       - name: Keep dry-run video
-        if: always() && inputs.dry_run
+        if: always() && (inputs.dry_run || contains(github.event.issue.title, 'dry-run'))
         uses: actions/upload-artifact@v4
         with:
           name: lesson-preview

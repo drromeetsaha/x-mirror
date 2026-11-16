@@ -70,6 +70,28 @@ A dry run can also be started on another branch (`gh workflow run mirror.yml
 `main`. Its `card-previews` artifact holds the cards, frames, Stories and
 Reels. Tick **recap** as well to preview this week's recap instead.
 
+## Learning videos (Facebook and Instagram only, never X)
+
+Bella (the Grok Bot routine "ChartRoom Daily Lesson", 7 PM India time) sends a
+lesson video to the ChartRoom Telegram Learnings topic. Right after, she opens
+a GitHub issue in this repo titled `learning-video <topic> <date>` whose body is:
+
+    file_id: <Telegram file_id of the mp4>
+    caption: <caption text>
+
+`.github/workflows/learnings.yml` runs for issues opened by the repo owner only,
+and `learnings_post.py` downloads the mp4 from Telegram (secret
+`LEARNINGS_BOT_TOKEN`, the CRStockListBot token), then posts it as a normal
+Facebook Page video (lessons run about 2 minutes; Facebook Reels stop at 90 s)
+and an Instagram Reel, using the same footer, disclaimer and hashtags as the
+mirror. It then comments the result on the issue and closes it.
+
+- **Dry run:** a title that also contains `dry-run` downloads the video and
+  posts nothing. Manual runs: **Actions -> Post learning video -> Run
+  workflow** (`file_id`, `caption`, `platforms`, `dry_run`).
+- **Status (16 Nov 2026):** built, not yet seen running; the first dry run is
+  the 17 Nov send. Unverified: Instagram accepting a 2-minute square Reel.
+
 ## Ads report
 
 **Actions → Ads report → Run workflow** prints the Meta ads' spend, reach,
